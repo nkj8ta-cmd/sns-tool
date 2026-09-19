@@ -32,30 +32,44 @@ def get_chinese_translation(text):
 
 
 # ==========================================
-# 2. 스레드(Threads) 전용 추출 엔진 (yt-dlp 우회)
+# 2. URL 전처리 (스레드 리다이렉트 & 유튜브 si 파라미터 정제)
 # ==========================================
-def extract_threads_package(raw_url):
+def clean_social_url(url):
+    clean = url.strip()
+
+    # 스레드 주소 정제
+    if "threads.com" in clean or "threads.net" in clean:
+        if "/share/" in clean:
+            try:
+                head_res = requests.head(
+                    clean,
+                    allow_redirects=True,
+                    timeout=5,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                clean = head_res.url
+            except Exception:
+                pass
+        clean = clean.split("?")[0].replace("threads.com", "threads.net")
+
+    # 유튜브 주소 정제 (?si= 등 추적 파라미터 분리)
+    elif "youtube.com" in clean or "youtu.be" in clean:
+        clean = clean.split("&")[0]
+        if "shorts/" in clean:
+            clean = clean.split("?")[0]
+        elif "watch?v=" in clean:
+            v_id = clean.split("watch?v=")[1].split("&")[0]
+            clean = f"https://www.youtube.com/watch?v={v_id}"
+
+    return clean
+
+
+# ==========================================
+# 3. 스레드(Threads) 전용 크롤러 엔진
+# ==========================================
+def extract_threads_package(url):
     session = requests.Session()
-
-    # 단축/공유 링크(/share/) 리다이렉트 추적
-    url = raw_url.strip()
-    if "/share/" in url:
-        try:
-            head_res = session.head(
-                url,
-                allow_redirects=True,
-                timeout=5,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            url = head_res.url
-        except Exception:
-            pass
-
-    # 주소 정리 (파라미터 제거)
-    url = url.split("?")[0].replace("threads.com", "threads.net")
-
-    # 메타(Meta) SSR 크롤러 헤더 (로그인 없이 메타데이터를 강제로 받아오는 핵심)
-    crawler_headers = {
+    headers = {
         "User-Agent": (
             "facebookexternalhit/1.1"
             " (+http://www.facebook.com/externalhit_uatext.php)"
@@ -65,29 +79,10 @@ def extract_threads_package(raw_url):
         ),
         "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
     }
-
-    res = session.get(url, headers=crawler_headers, timeout=10)
+    res = session.get(url, headers=headers, timeout=10)
     page_html = res.text
 
-    # 크롤러 차단 대비 모바일 헤더 예비 시도
-    if len(page_html) < 500 or (
-        "og:description" not in page_html and "video_versions" not in page_html
-    ):
-        mobile_headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X)"
-                " AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4"
-                " Mobile/15E148 Safari/604.1"
-            ),
-            "Accept": (
-                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-            ),
-            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
-        }
-        res = session.get(url, headers=mobile_headers, timeout=10)
-        page_html = res.text
-
-    # 1) 본문 추출
+    # 본문 추출
     post_text = "추출된 본문이 없습니다."
     desc_match = re.search(
         r'<meta\s+(?:property|name)=["\'](?:og:description|twitter:description)["\']\s+content=["\'](.*?)["\']',
@@ -96,19 +91,11 @@ def extract_threads_package(raw_url):
     )
     if desc_match:
         post_text = html.unescape(desc_match.group(1))
-        # 만약 "작성자 on Threads: '실제본문'" 형태라면 본문만 추출
         sub_match = re.search(r':\s*["“](.*)["”]$', post_text, re.DOTALL)
         if sub_match:
             post_text = sub_match.group(1)
-    else:
-        title_match = re.search(
-            r'<meta\s+(?:property|name)=["\']og:title["\']\s+content=["\'](.*?)["\']',
-            page_html,
-        )
-        if title_match:
-            post_text = html.unescape(title_match.group(1))
 
-    # 2) 동영상 URL 추출
+    # 비디오 URL 추출
     video_urls = []
     og_videos = re.findall(
         r'<meta\s+(?:property|name)=["\']og:video(?::url)?["\']\s+content=["\'](.*?)["\']',
@@ -116,7 +103,6 @@ def extract_threads_package(raw_url):
     )
     video_urls.extend([html.unescape(v) for v in og_videos])
 
-    # JSON 내부 비디오 링크 탐색
     if not video_urls:
         json_videos = re.findall(
             r'"video_versions":\s*\[\s*\{[^}]*"url":\s*"([^"]+)"', page_html
@@ -125,16 +111,7 @@ def extract_threads_package(raw_url):
             v.replace(r"\/", "/").replace(r"\u0026", "&") for v in json_videos
         ])
 
-    if not video_urls:
-        direct_mp4 = re.findall(
-            r'(https?:\\?/\\?/[^"\']+\.mp4[^"\']*)', page_html
-        )
-        for m in direct_mp4:
-            clean_m = m.replace(r"\/", "/").replace(r"\u0026", "&")
-            if any(k in clean_m for k in ["cdninstagram.com", "fbcdn.net"]):
-                video_urls.append(clean_m)
-
-    # 3) 이미지 URL 추출
+    # 이미지 URL 추출
     image_urls = []
     og_images = re.findall(
         r'<meta\s+(?:property|name)=["\']og:image["\']\s+content=["\'](.*?)["\']',
@@ -148,11 +125,9 @@ def extract_threads_package(raw_url):
         ):
             image_urls.append(img_clean)
 
-    # 중복 제거
     video_urls = list(dict.fromkeys(video_urls))
     image_urls = list(dict.fromkeys(image_urls))
 
-    # 다운로드 진행 (바이너리 바이트 수집)
     dl_headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -160,7 +135,7 @@ def extract_threads_package(raw_url):
         "Referer": "https://www.threads.net/",
     }
 
-    videos = []
+    videos, images = [], []
     for v_url in video_urls:
         try:
             v_res = session.get(v_url, headers=dl_headers, timeout=15)
@@ -169,7 +144,6 @@ def extract_threads_package(raw_url):
         except Exception:
             pass
 
-    images = []
     for i_url in image_urls:
         try:
             i_res = session.get(i_url, headers=dl_headers, timeout=10)
@@ -182,7 +156,7 @@ def extract_threads_package(raw_url):
 
 
 # ==========================================
-# 3. 유튜브/틱톡/인스타 범용 엔진 (yt-dlp)
+# 4. 범용 다운로드 엔진 (유튜브·틱톡·인스타 통합 최적화)
 # ==========================================
 def download_media_package(target_url):
     temp_dir = tempfile.mkdtemp()
@@ -192,19 +166,21 @@ def download_media_package(target_url):
         "outtmpl": out_tmpl,
         "quiet": True,
         "no_warnings": True,
-        "format": (
-            "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
-        ),
+        # 유연한 선택: H.264를 우선하되, 쇼츠처럼 VP9/AV1만 있는 영상도 에러 없이 받아옴
+        "format": "bestvideo*+bestaudio/best",
         "format_sort": ["vcodec:h264", "acodec:m4a", "ext:mp4:m4a"],
+        "merge_output_format": "mp4",
     }
 
+    # 유튜브는 403 차단을 피하기 위해 헤더를 비우고 android/tv_embedded 프로토콜 우선 지정
     if "youtube.com" in target_url or "youtu.be" in target_url:
         ydl_opts["extractor_args"] = {
             "youtube": {
-                "player_client": ["ios", "mweb"],
+                "player_client": ["android", "tv_embedded", "web"],
             }
         }
     else:
+        # 틱톡 및 기타 SNS는 브라우저 User-Agent 필요
         ydl_opts["http_headers"] = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -223,8 +199,7 @@ def download_media_package(target_url):
     )
 
     downloaded_files = glob.glob(os.path.join(temp_dir, "*"))
-    videos = []
-    images = []
+    videos, images = [], []
 
     for f in downloaded_files:
         ext = os.path.splitext(f)[1].lower()
@@ -239,7 +214,7 @@ def download_media_package(target_url):
 
 
 # ==========================================
-# 4. Streamlit UI 영역
+# 5. UI 화면
 # ==========================================
 st.subheader("🔍 샤오홍슈 키워드 생성")
 with st.form("trans_form"):
@@ -284,16 +259,21 @@ if analyze_btn:
     if not url_input.strip():
         st.warning("링크를 입력해 주세요.")
     else:
-        with st.spinner("미디어 파일 다운로드 및 변환 중..."):
+        with st.spinner("미디어 다운로드 및 패키징 중..."):
             try:
                 url_match = re.search(r"https?://\S+", url_input)
                 raw_url = url_match.group(0) if url_match else url_input
+                target_url = clean_social_url(raw_url)
 
-                # 스레드는 전용 파서로 우회, 나머지는 yt-dlp 엔진 사용
-                if "threads.com" in raw_url or "threads.net" in raw_url:
-                    post_text, videos, images = extract_threads_package(raw_url)
+                # 스레드는 전용 파서 사용, 나머지는 yt-dlp 통합 엔진 사용
+                if "threads.net" in target_url or "threads.com" in target_url:
+                    post_text, videos, images = extract_threads_package(
+                        target_url
+                    )
                 else:
-                    post_text, videos, images = download_media_package(raw_url)
+                    post_text, videos, images = download_media_package(
+                        target_url
+                    )
 
                 st.success("✅ 확인 완료!")
 
