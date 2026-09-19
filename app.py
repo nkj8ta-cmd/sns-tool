@@ -32,7 +32,7 @@ def get_chinese_translation(text):
 
 
 # ==========================================
-# 2. URL 전처리 (스레드 리다이렉트 & 유튜브 si 파라미터 정제)
+# 2. URL 전처리 (스레드 / 유튜브 파라미터 정리)
 # ==========================================
 def clean_social_url(url):
     clean = url.strip()
@@ -52,7 +52,7 @@ def clean_social_url(url):
                 pass
         clean = clean.split("?")[0].replace("threads.com", "threads.net")
 
-    # 유튜브 주소 정제 (?si= 등 추적 파라미터 분리)
+    # 유튜브 주소 정제 (?si= 등 추적 파라미터 제거)
     elif "youtube.com" in clean or "youtu.be" in clean:
         clean = clean.split("&")[0]
         if "shorts/" in clean:
@@ -82,7 +82,24 @@ def extract_threads_package(url):
     res = session.get(url, headers=headers, timeout=10)
     page_html = res.text
 
-    # 본문 추출
+    if len(page_html) < 500 or (
+        "og:description" not in page_html and "video_versions" not in page_html
+    ):
+        mobile_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X)"
+                " AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4"
+                " Mobile/15E148 Safari/604.1"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            ),
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+        }
+        res = session.get(url, headers=mobile_headers, timeout=10)
+        page_html = res.text
+
+    # 1) 본문 추출
     post_text = "추출된 본문이 없습니다."
     desc_match = re.search(
         r'<meta\s+(?:property|name)=["\'](?:og:description|twitter:description)["\']\s+content=["\'](.*?)["\']',
@@ -94,8 +111,15 @@ def extract_threads_package(url):
         sub_match = re.search(r':\s*["“](.*)["”]$', post_text, re.DOTALL)
         if sub_match:
             post_text = sub_match.group(1)
+    else:
+        title_match = re.search(
+            r'<meta\s+(?:property|name)=["\']og:title["\']\s+content=["\'](.*?)["\']',
+            page_html,
+        )
+        if title_match:
+            post_text = html.unescape(title_match.group(1))
 
-    # 비디오 URL 추출
+    # 2) 비디오 URL 추출
     video_urls = []
     og_videos = re.findall(
         r'<meta\s+(?:property|name)=["\']og:video(?::url)?["\']\s+content=["\'](.*?)["\']',
@@ -111,7 +135,7 @@ def extract_threads_package(url):
             v.replace(r"\/", "/").replace(r"\u0026", "&") for v in json_videos
         ])
 
-    # 이미지 URL 추출
+    # 3) 이미지 URL 추출
     image_urls = []
     og_images = re.findall(
         r'<meta\s+(?:property|name)=["\']og:image["\']\s+content=["\'](.*?)["\']',
@@ -156,7 +180,7 @@ def extract_threads_package(url):
 
 
 # ==========================================
-# 4. 범용 다운로드 엔진 (유튜브·틱톡·인스타 통합 최적화)
+# 4. 범용 다운로드 엔진 (유튜브 403 완전 우회)
 # ==========================================
 def download_media_package(target_url):
     temp_dir = tempfile.mkdtemp()
@@ -166,21 +190,21 @@ def download_media_package(target_url):
         "outtmpl": out_tmpl,
         "quiet": True,
         "no_warnings": True,
-        # 유연한 선택: H.264를 우선하되, 쇼츠처럼 VP9/AV1만 있는 영상도 에러 없이 받아옴
-        "format": "bestvideo*+bestaudio/best",
-        "format_sort": ["vcodec:h264", "acodec:m4a", "ext:mp4:m4a"],
-        "merge_output_format": "mp4",
     }
 
-    # 유튜브는 403 차단을 피하기 위해 헤더를 비우고 android/tv_embedded 프로토콜 우선 지정
+    # 유튜브: 403 차단을 우회하기 위해 iOS 단독 클라이언트 및 단일 일체형 포맷 사용
     if "youtube.com" in target_url or "youtu.be" in target_url:
+        ydl_opts["format"] = "best[ext=mp4]/best"
         ydl_opts["extractor_args"] = {
             "youtube": {
-                "player_client": ["android", "tv_embedded", "web"],
+                "player_client": ["ios"],
             }
         }
     else:
-        # 틱톡 및 기타 SNS는 브라우저 User-Agent 필요
+        # 틱톡 및 기타 SNS: H.264 코덱 우선 수집 및 브라우저 헤더 전달
+        ydl_opts["format"] = "bestvideo*+bestaudio/best"
+        ydl_opts["format_sort"] = ["vcodec:h264", "acodec:m4a", "ext:mp4:m4a"]
+        ydl_opts["merge_output_format"] = "mp4"
         ydl_opts["http_headers"] = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -259,13 +283,12 @@ if analyze_btn:
     if not url_input.strip():
         st.warning("링크를 입력해 주세요.")
     else:
-        with st.spinner("미디어 다운로드 및 패키징 중..."):
+        with st.spinner("미디어 다운로드 및 변환 중..."):
             try:
                 url_match = re.search(r"https?://\S+", url_input)
                 raw_url = url_match.group(0) if url_match else url_input
                 target_url = clean_social_url(raw_url)
 
-                # 스레드는 전용 파서 사용, 나머지는 yt-dlp 통합 엔진 사용
                 if "threads.net" in target_url or "threads.com" in target_url:
                     post_text, videos, images = extract_threads_package(
                         target_url
