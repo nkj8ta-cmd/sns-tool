@@ -1,7 +1,9 @@
-import html
+import glob
 import io
+import os
 import re
-from urllib.parse import quote, urlparse, urlunparse
+import tempfile
+from urllib.parse import quote
 import zipfile
 from deep_translator import GoogleTranslator, MyMemoryTranslator
 import requests
@@ -14,7 +16,7 @@ st.set_page_config(
 st.title("⚡ SNS 올인원 작업 도구")
 
 
-# 1. 번역 캐싱
+# 1. 중국어 번역 캐싱
 @st.cache_data(show_spinner=False)
 def get_chinese_translation(text):
     clean = text.strip()
@@ -26,106 +28,73 @@ def get_chinese_translation(text):
         )
 
 
-# 2. 스레드 전용 추출기 (헤더 강화 및 URL 정제)
-def extract_threads(raw_url):
-    # 불필요한 공유 추적 쿼리스트링 제거
-    parsed = urlparse(raw_url)
-    clean_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X)"
-            " AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148"
-            " Safari/604.1"
-        ),
-        "Accept": (
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        ),
-        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
-    }
-    res = requests.get(
-        clean_url, headers=headers, allow_redirects=True, timeout=10
-    )
-    page_html = res.text
-
-    # 본문 추출
-    desc_match = re.search(
-        r'<meta\s+(?:property|name)=["\'](?:og:description|twitter:description)["\']\s+content=["\'](.*?)["\']',
-        page_html,
-        re.DOTALL,
-    )
-    description = (
-        html.unescape(desc_match.group(1))
-        if desc_match
-        else "본문 텍스트가 없습니다."
-    )
-
-    # 비디오 추출
-    video_matches = re.findall(
-        r'<meta\s+(?:property|name)=["\']og:video(?::url)?["\']\s+content=["\'](.*?)["\']',
-        page_html,
-    )
-    videos = [html.unescape(v) for v in set(video_matches) if v]
-
-    # 이미지 추출
-    image_matches = re.findall(
-        r'<meta\s+(?:property|name)=["\']og:image["\']\s+content=["\'](.*?)["\']',
-        page_html,
-    )
-    images = [
-        html.unescape(i)
-        for i in set(image_matches)
-        if i and "static.cdninstagram.com" not in i
-    ]
-
-    return {"description": description, "videos": videos, "images": images}
+# 2. URL 전처리 (스레드 share 단축 및 threads.com -> threads.net 변환)
+def clean_social_url(url):
+    clean = url.strip()
+    if "threads.com" in clean or "threads.net" in clean:
+        if "/share/" in clean:
+            try:
+                res = requests.head(
+                    clean,
+                    allow_redirects=True,
+                    timeout=5,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                clean = res.url
+            except Exception:
+                pass
+        clean = clean.replace("threads.com", "threads.net")
+        clean = clean.split("?")[0]
+    return clean
 
 
-# 3. 유튜브/틱톡/인스타 범용 추출기 (우회 옵션 탑재)
-def extract_general(url):
+# 3. yt-dlp 로컬 임시 다운로드 엔진 (CDN 차단 완벽 우회)
+def download_media_package(target_url):
+    temp_dir = tempfile.mkdtemp()
+    out_tmpl = os.path.join(temp_dir, "%(id)s.%(ext)s")
+
     ydl_opts = {
+        "outtmpl": out_tmpl,
+        # 영상과 소리가 합쳐진 최적의 MP4 우선 다운로드
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "quiet": True,
         "no_warnings": True,
-        "extract_flat": False,
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                 " (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             ),
-            "Referer": "https://www.tiktok.com/",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
         },
-        # 유튜브 데이터센터 IP 차단 우회용 모바일 클라이언트 지정
         "extractor_args": {
-            "youtube": {"player_client": ["android", "web", "ios"]}
+            "youtube": {"player_client": ["android", "ios", "web"]}
         },
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+        info = ydl.extract_info(target_url, download=True)
 
     post_text = (
         info.get("description")
         or info.get("title")
-        or "추출된 내용이 없습니다."
+        or "추출된 본문이 없습니다."
     )
-    videos, images = [], []
 
-    if "entries" in info:
-        for entry in info["entries"]:
-            if entry.get("vcodec") != "none" and entry.get("url"):
-                videos.append(entry.get("url"))
-            elif entry.get("url"):
-                images.append(entry.get("url"))
-    else:
-        if info.get("url") and info.get("vcodec") != "none":
-            videos.append(info.get("url"))
-        elif info.get("url") and not videos:
-            videos.append(info.get("url"))
+    # 폴더에 다운로드된 실제 미디어 파일 읽기
+    downloaded_files = glob.glob(os.path.join(temp_dir, "*"))
+    videos = []
+    images = []
 
-        if info.get("thumbnails") and not videos:
-            images.append(info["thumbnails"][-1].get("url"))
+    for f in downloaded_files:
+        ext = os.path.splitext(f)[1].lower()
+        if ext in [".mp4", ".mkv", ".webm", ".mov"]:
+            with open(f, "rb") as fp:
+                videos.append(fp.read())
+        elif ext in [".jpg", ".jpeg", ".png", ".webp"]:
+            with open(f, "rb") as fp:
+                images.append(fp.read())
 
-    return {"description": post_text, "videos": videos, "images": images}
+    return post_text, videos, images
 
 
 # ================= UI 영역 =================
@@ -169,46 +138,21 @@ if analyze_btn:
     if not url_input.strip():
         st.warning("링크를 입력해 주세요.")
     else:
-        with st.spinner("미디어 및 텍스트 추출 중..."):
+        with st.spinner("서버에서 미디어를 안전하게 내려받는 중..."):
             try:
                 url_match = re.search(r"https?://\S+", url_input)
-                target_url = url_match.group(0) if url_match else url_input
+                raw_url = url_match.group(0) if url_match else url_input
+                target_url = clean_social_url(raw_url)
 
-                if "threads." in target_url:
-                    data = extract_threads(target_url)
-                else:
-                    data = extract_general(target_url)
+                post_text, videos, images = download_media_package(target_url)
 
                 st.success("✅ 확인 완료!")
-
-                videos = data["videos"]
-                images = data["images"]
-                post_text = data["description"]
-
-                # 틱톡/유튜브 CDN 차단 방지용 헤더
-                dl_headers = {
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-                        " AppleWebKit/537.36"
-                    ),
-                    "Referer": (
-                        "https://www.tiktok.com/"
-                        if "tiktok" in target_url
-                        else "https://www.youtube.com/"
-                    ),
-                }
 
                 # 1) 동영상 영역
                 if videos:
                     st.markdown("#### 🎬 동영상")
-                    for idx, v_url in enumerate(videos):
-                        # 서버에서 바이너리를 직접 가져와 플레이어와 다운로드 버튼에 주입
-                        v_res = requests.get(
-                            v_url, headers=dl_headers, stream=True, timeout=15
-                        )
-                        v_bytes = v_res.content
-
-                        st.video(v_bytes)  # URL 대신 데이터 바이트 직접 재생
+                    for idx, v_bytes in enumerate(videos):
+                        st.video(v_bytes)
                         st.download_button(
                             f"⬇️ 영상 #{idx + 1} 다운로드",
                             v_bytes,
@@ -221,13 +165,12 @@ if analyze_btn:
                 if images:
                     st.markdown(f"#### 🖼 사진 ({len(images)}개)")
                     cols = st.columns(min(len(images), 3))
-                    for idx, img_url in enumerate(images):
+                    for idx, img_bytes in enumerate(images):
                         with cols[idx % 3]:
-                            st.image(img_url, use_container_width=True)
-                            i_res = requests.get(img_url, timeout=10)
+                            st.image(img_bytes, use_container_width=True)
                             st.download_button(
                                 "⬇️ 받기",
-                                i_res.content,
+                                img_bytes,
                                 f"img_{idx + 1}.jpg",
                                 "image/jpeg",
                                 key=f"i_{idx}",
@@ -243,14 +186,10 @@ if analyze_btn:
                     zip_buffer, "w", zipfile.ZIP_DEFLATED
                 ) as zf:
                     zf.writestr("content.txt", post_text.encode("utf-8"))
-                    for idx, v_url in enumerate(videos):
-                        v_res = requests.get(
-                            v_url, headers=dl_headers, timeout=15
-                        )
-                        zf.writestr(f"video_{idx + 1}.mp4", v_res.content)
-                    for idx, img_url in enumerate(images):
-                        i_res = requests.get(img_url, timeout=10)
-                        zf.writestr(f"image_{idx + 1}.jpg", i_res.content)
+                    for idx, v in enumerate(videos):
+                        zf.writestr(f"video_{idx + 1}.mp4", v)
+                    for idx, i in enumerate(images):
+                        zf.writestr(f"image_{idx + 1}.jpg", i)
 
                 st.download_button(
                     "📦 전체 다운로드 (ZIP)",
