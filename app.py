@@ -48,17 +48,18 @@ def clean_social_url(url):
     return clean
 
 
-# 3. yt-dlp 로컬 임시 다운로드 엔진 (CDN 차단 완벽 우회)
+# 3. 고호환성 다운로드 엔진 (H.264 코덱 강제 + 유튜브 임베디드 우회)
 def download_media_package(target_url):
     temp_dir = tempfile.mkdtemp()
     out_tmpl = os.path.join(temp_dir, "%(id)s.%(ext)s")
 
     ydl_opts = {
         "outtmpl": out_tmpl,
-        # 영상과 소리가 합쳐진 최적의 MP4 우선 다운로드
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "quiet": True,
         "no_warnings": True,
+        # 브라우저 재생용 H.264 코덱 우선 선택 (코덱 호환성 문제 해결)
+        "format": "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+        "format_sort": ["vcodec:h264", "acodec:m4a", "ext:mp4:m4a"],
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -66,8 +67,12 @@ def download_media_package(target_url):
             ),
             "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
         },
+        # 유튜브 데이터센터 IP 차단 우회 (TV 임베디드 & iOS 프로토콜)
         "extractor_args": {
-            "youtube": {"player_client": ["android", "ios", "web"]}
+            "youtube": {
+                "player_client": ["tv_embedded", "ios", "android"],
+                "player_skip": ["web"],
+            }
         },
     }
 
@@ -80,7 +85,6 @@ def download_media_package(target_url):
         or "추출된 본문이 없습니다."
     )
 
-    # 폴더에 다운로드된 실제 미디어 파일 읽기
     downloaded_files = glob.glob(os.path.join(temp_dir, "*"))
     videos = []
     images = []
@@ -138,7 +142,7 @@ if analyze_btn:
     if not url_input.strip():
         st.warning("링크를 입력해 주세요.")
     else:
-        with st.spinner("서버에서 미디어를 안전하게 내려받는 중..."):
+        with st.spinner("호환 코덱으로 영상 다운로드 및 처리 중..."):
             try:
                 url_match = re.search(r"https?://\S+", url_input)
                 raw_url = url_match.group(0) if url_match else url_input
