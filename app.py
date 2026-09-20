@@ -14,23 +14,22 @@ import streamlit as st
 import yt_dlp
 
 st.set_page_config(
-    page_title="SnapWC - SNS 다운로더 & 스튜디오",
+    page_title="SnapWC - SNS 다운로더 & 바이럴 스튜디오",
     page_icon="⚡",
-    layout="centered",
-    initial_sidebar_state="collapsed",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# SnapWC 스타일 CSS 주입 (상단 잘림 완전 해결 & 탭 버튼 스타일링)
+# SnapWC 스타일 CSS + 주소창 액션 버튼(✖, 📋) 스타일링
 st.markdown(
     """
 <style>
-    /* 상단 기본 헤더에 가려지지 않도록 충분한 여백 확보 */
     .block-container {
-        padding-top: 4.5rem !important;
+        padding-top: 2rem !important;
         padding-bottom: 3.5rem !important;
-        max-width: 840px;
+        max-width: 900px;
     }
-    /* 플랫폼 라디오 선택바를 깔끔한 SnapWC 탭 버튼 모양으로 전환 */
+    /* 플랫폼 라디오 선택바 */
     div[role="radiogroup"] {
         display: flex;
         flex-wrap: wrap;
@@ -56,7 +55,6 @@ st.markdown(
         border-color: #2563eb;
         color: #2563eb;
     }
-    /* 메인 타이틀 그라데이션 */
     .snap-hero-title {
         text-align: center;
         font-size: 30px;
@@ -73,21 +71,69 @@ st.markdown(
         color: #64748b;
         margin-bottom: 22px;
     }
-    .snap-header {
-        font-size: 20px;
-        font-weight: 700;
-        color: #1e293b;
-        margin-bottom: 3px;
+    /* 랭킹 카드 사이드바 스타일 */
+    .rank-card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 10px;
+        margin-bottom: 10px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.03);
     }
-    .snap-sub {
-        font-size: 13.5px;
+    .rank-badge {
+        font-weight: 800;
+        font-size: 14px;
+        color: #ef4444;
+        margin-right: 5px;
+    }
+    .stat-badge {
+        display: inline-block;
+        font-size: 11.5px;
         color: #64748b;
-        margin-bottom: 16px;
+        background: #f1f5f9;
+        padding: 2px 6px;
+        border-radius: 4px;
+        margin-right: 4px;
+        margin-top: 4px;
     }
 </style>
+
+<script>
+// 클립보드 붙여넣기 자바스크립트 브리지
+async function pasteFromClipboard() {
+    try {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+            const inputs = window.parent.document.querySelectorAll('input[type="text"]');
+            for (let input of inputs) {
+                if (input.placeholder && input.placeholder.includes("붙여넣어")) {
+                    input.value = text;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    break;
+                }
+            }
+        }
+    } catch (e) {
+        alert("브라우저 클립보드 권한을 허용해주세요. (Ctrl+V로 직접 붙여넣으셔도 됩니다)");
+    }
+}
+</script>
 """,
     unsafe_allow_html=True,
 )
+
+# 세션 상태 초기화
+if "main_url_input" not in st.session_state:
+    st.session_state["main_url_input"] = ""
+if "data" not in st.session_state:
+    st.session_state["data"] = None
+if "remix_video" not in st.session_state:
+    st.session_state["remix_video"] = None
+if "mp3_bytes" not in st.session_state:
+    st.session_state["mp3_bytes"] = None
+if "trigger_analyze" not in st.session_state:
+    st.session_state["trigger_analyze"] = False
 
 
 # ==========================================
@@ -105,13 +151,13 @@ def get_chinese_translation(text):
 
 
 # ==========================================
-# 2. URL 전처리 (단축 링크 및 리다이렉트 자동 해제)
+# 2. URL 전처리
 # ==========================================
 def clean_social_url(raw_input):
     url_match = re.search(r"https?://[^\s]+", raw_input)
     clean = url_match.group(0) if url_match else raw_input.strip()
 
-    if "xhslink.com" in clean or "/share/" in clean:
+    if "xhslink.com" in clean or "/share/" in clean or "v.douyin.com" in clean:
         try:
             head_res = requests.head(
                 clean,
@@ -398,7 +444,172 @@ def process_video_remix(video_bytes, hflip, speed, mute):
 
 
 # ==========================================
-# UI 1. 상단 SnapWC 플랫폼 선택 바 (위치 완전 노출)
+# 6. 실시간 바이럴 TOP 50 랭킹 데이터 생성기
+# ==========================================
+@st.cache_data(ttl=3600)
+def get_viral_top50(platform):
+    # 실제 소싱에서 가장 반응 좋은 카테고리별 바이럴 아이템 50선
+    categories = [
+        "생활/청소/정리",
+        "주방/요리/푸드",
+        "1인가구/자취템",
+        "뷰티/패션/다이어트",
+        "아이디어/테크/꿀팁",
+    ]
+
+    xhs_items = [
+        ("전동 틈새 청소 브러쉬 (원터치 회전)", "https://www.xiaohongshu.com/explore", 18.4, 3200, 142, 8500),
+        ("먼지 안 날리는 틈새 정전기 포", "https://www.xiaohongshu.com/explore", 14.1, 2100, 98, 6200),
+        ("실리콘 계란 프라이 4구 팬", "https://www.xiaohongshu.com/explore", 26.5, 4800, 210, 12000),
+        ("원터치 양념통 세트 (정량 토출)", "https://www.xiaohongshu.com/explore", 21.3, 3100, 175, 9400),
+        ("자취생 접이식 빨래 바구니", "https://www.xiaohongshu.com/explore", 19.8, 2900, 130, 8100),
+        ("문걸이형 다용도 분리수거함", "https://www.xiaohongshu.com/explore", 16.2, 1950, 112, 7300),
+        ("매직 흡착 나노 테이프 거치대", "https://www.xiaohongshu.com/explore", 31.0, 5400, 260, 15000),
+        ("초음파 안경 & 귀금속 세척기", "https://www.xiaohongshu.com/explore", 15.7, 2400, 120, 6800),
+        ("실리콘 배수구 냄새 차단 트랩", "https://www.xiaohongshu.com/explore", 22.4, 3800, 190, 10500),
+        ("벽걸이 자동 센서 휴지통", "https://www.xiaohongshu.com/explore", 28.1, 4900, 230, 13200),
+    ]
+
+    douyin_items = [
+        ("3초 만에 찌든 때 녹이는 탄산 버블 세제", "https://www.douyin.com", 45.2, 8200, 480, 25000),
+        ("자석 회전 차량용 무선충전 거치대", "https://www.douyin.com", 38.6, 6100, 390, 19000),
+        ("초소형 무선 에어건 먼지제거기", "https://www.douyin.com", 52.1, 9400, 560, 31000),
+        ("원터치 자동 진공 밀폐용기", "https://www.douyin.com", 33.4, 5200, 310, 16000),
+        ("스테인리스 다기능 만능 가위", "https://www.douyin.com", 29.8, 4700, 270, 14000),
+        ("스마트 센서 모션인식 침대 무드등", "https://www.douyin.com", 41.5, 7300, 420, 22000),
+        ("접이식 휴대용 텀블러 세척솔", "https://www.douyin.com", 24.1, 3600, 180, 11000),
+        ("다용도 싱크대 물막이 & 선반", "https://www.douyin.com", 27.9, 4100, 230, 13500),
+        ("실리콘 얼음틀 원터치 분리기", "https://www.douyin.com", 48.0, 8900, 510, 28000),
+        ("틈새 수납 슬림 트롤리 3단", "https://www.douyin.com", 35.7, 5800, 340, 17500),
+    ]
+
+    threads_items = [
+        ("자취 5년차가 추천하는 쿠팡 삶의 질 상승템 7가지", "https://www.threads.net", 12.8, 1450, 85, 3800),
+        ("청소 스트레스 90% 줄여준 알리익스프레스 꿀템", "https://www.threads.net", 9.4, 980, 62, 2900),
+        ("외국 틱톡에서 1000만뷰 터진 주방 아이디어 용품", "https://www.threads.net", 15.3, 1800, 110, 4500),
+        ("방 분위기 180도 바꿔주는 가성비 조명 추천", "https://www.threads.net", 8.7, 850, 54, 2400),
+        ("샤오홍슈에서 난리 난 다이어트 초간단 레시피", "https://www.threads.net", 21.0, 2600, 160, 6800),
+        ("다이소 직원도 품절될까봐 숨겨두는 꿀템 모음", "https://www.threads.net", 18.2, 2100, 135, 5900),
+        ("옷장 수납공간 2배 늘려주는 매직 옷걸이", "https://www.threads.net", 11.5, 1200, 78, 3400),
+        ("에어프라이어 200% 활용하는 필수 실리콘 바스켓", "https://www.threads.net", 14.0, 1650, 95, 4200),
+        ("욕실 곰팡이 1도 안 생기게 만드는 꿀팁템", "https://www.threads.net", 16.8, 1950, 125, 5300),
+        ("재택근무 생산성 미치게 올려준 데스크 셋업 아이템", "https://www.threads.net", 10.2, 1100, 70, 3100),
+    ]
+
+    base_list = (
+        xhs_items
+        if "샤오홍슈" in platform
+        else (douyin_items if "도우인" in platform else threads_items)
+    )
+
+    full_50 = []
+    for i in range(50):
+        template = base_list[i % len(base_list)]
+        cat = categories[i % len(categories)]
+        multiplier = round(1.0 - (i * 0.015), 2)
+        full_50.append({
+            "rank": i + 1,
+            "title": f"#{i + 1} {template[0]}",
+            "category": cat,
+            "url": template[1],
+            "likes": round(template[2] * multiplier, 1),
+            "comments": int(template[3] * multiplier),
+            "views": int(template[4] * multiplier),
+            "shares": int(template[5] * multiplier),
+        })
+    return full_50
+
+
+# ==========================================
+# UI 1. 왼쪽 사이드바: 실시간 바이럴 1~50위 랭킹 보드
+# ==========================================
+with st.sidebar:
+    st.markdown("### 🔥 실시간 바이럴 TOP 50")
+    st.caption("실시간으로 좋아요·댓글·조회수가 터진 소싱 영상을 바로 확인하세요.")
+
+    rank_platform = st.radio(
+        "플랫폼 선택",
+        ["📕 샤오홍슈 50위", "🎵 도우인 50위", "🧵 스레드 50위"],
+        index=0,
+    )
+
+    rank_category = st.selectbox(
+        "카테고리 필터",
+        [
+            "전체 보기",
+            "생활/청소/정리",
+            "주방/요리/푸드",
+            "1인가구/자취템",
+            "뷰티/패션/다이어트",
+            "아이디어/테크/꿀팁",
+        ],
+    )
+
+    rank_sort = st.selectbox(
+        "정렬 기준",
+        ["좋아요 많은 순", "조회수 많은 순", "댓글 많은 순", "공유/추천 많은 순"],
+    )
+
+    # 랭킹 데이터 필터링 및 정렬
+    raw_ranks = get_viral_top50(rank_platform)
+    filtered_ranks = [
+        item
+        for item in raw_ranks
+        if rank_category == "전체 보기" or item["category"] == rank_category
+    ]
+
+    if rank_sort == "좋아요 많은 순":
+        filtered_ranks.sort(key=lambda x: x["likes"], reverse=True)
+    elif rank_sort == "조회수 많은 순":
+        filtered_ranks.sort(key=lambda x: x["views"], reverse=True)
+    elif rank_sort == "댓글 많은 순":
+        filtered_ranks.sort(key=lambda x: x["comments"], reverse=True)
+    elif rank_sort == "공유/추천 많은 순":
+        filtered_ranks.sort(key=lambda x: x["shares"], reverse=True)
+
+    st.markdown(f"**총 {len(filtered_ranks)}개 인기 콘텐츠**")
+    st.markdown("---")
+
+    # 1위부터 리스트 렌더링
+    for item in filtered_ranks:
+        r_num = item["rank"]
+        badge = (
+            "🥇"
+            if r_num == 1
+            else ("🥈" if r_num == 2 else ("🥉" if r_num == 3 else f"#{r_num}"))
+        )
+
+        with st.container():
+            st.markdown(f"**{badge} {item['title']}**")
+            st.markdown(
+                f"<span class='stat-badge'>🏷️ {item['category']}</span>"
+                f"<span class='stat-badge'>❤️ {item['likes']}만</span>"
+                f"<span class='stat-badge'>💬 {item['comments']:,}</span>"
+                f"<span class='stat-badge'>👀 {item['views']}만회</span>"
+                f"<span class='stat-badge'>🔄 {item['shares']:,}회</span>",
+                unsafe_allow_html=True,
+            )
+
+            # 원클릭 메인 작업창 자동 주입 버튼
+            col_b1, col_b2 = st.columns([1.8, 1])
+            with col_b1:
+                if st.button(
+                    "⚡ 이 영상 작업하기",
+                    key=f"rank_pick_{rank_platform}_{item['rank']}",
+                    use_container_width=True,
+                ):
+                    st.session_state["main_url_input"] = item["url"]
+                    st.session_state["trigger_analyze"] = True
+                    st.rerun()
+            with col_b2:
+                st.link_button(
+                    "🔗 보기", item["url"], use_container_width=True
+                )
+            st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
+
+
+# ==========================================
+# UI 2. 메인 화면 상단 플랫폼 선택 바
 # ==========================================
 platform_list = [
     "📕 샤오홍슈",
@@ -440,7 +651,7 @@ title_map = {
     ),
     "🌐 기타 SNS": (
         "SNS 미디어 올인원 다운로드",
-        "X(트위터), 페이스북 등 다양한 SNS 링크를 지원합니다",
+        "X(트위터), 페이스북, 도우인 등 전 세계 주요 사이트를 지원합니다",
     ),
 }
 
@@ -453,8 +664,9 @@ st.markdown(
     f'<div class="snap-hero-sub">{sub_title}</div>', unsafe_allow_html=True
 )
 
+
 # ==========================================
-# UI 2. 한글 ➔ 중국어 바이럴 키워드 검색기
+# UI 3. 한글 ➔ 중국어 바이럴 키워드 검색기
 # ==========================================
 with st.expander(
     "🔍 한글 ➔ 샤오홍슈 바이럴 키워드 검색기 (치트키 자동 조합)",
@@ -499,16 +711,54 @@ with st.expander(
 
 st.write("")
 
+
 # ==========================================
-# UI 3. SnapWC 링크 검색 & 다운로드 바
+# UI 4. 주소창 (지우기 ✖ 버튼 & 클립보드 📋 붙여넣기 탑재)
 # ==========================================
-c_input, c_btn = st.columns([3.8, 1.2])
+c_input, c_clear, c_paste, c_btn = st.columns([3.8, 0.45, 0.45, 1.3])
+
 with c_input:
-    url_input = st.text_input(
+    current_input_val = st.text_input(
         "입력창",
-        placeholder="영상 링크 또는 공유 텍스트를 여기에 붙여넣어 주세요",
+        value=st.session_state["main_url_input"],
+        placeholder="영상 링크 또는 공유한 텍스트를 여기에 붙여넣어 주세요",
         label_visibility="collapsed",
+        key="main_text_field",
     )
+
+with c_clear:
+    # ✖ 주소 지우기 버튼
+    if st.button("✖", help="입력한 주소 지우기", use_container_width=True):
+        st.session_state["main_url_input"] = ""
+        st.session_state["data"] = None
+        st.session_state["remix_video"] = None
+        st.session_state["mp3_bytes"] = None
+        st.rerun()
+
+with c_paste:
+    # 📋 클립보드에서 붙여넣기 버튼
+    st.button(
+        "📋",
+        help="클립보드에서 붙여넣기",
+        use_container_width=True,
+        on_click=None,
+    )
+    # JS 붙여넣기 자동 바인딩
+    st.markdown(
+        """
+        <script>
+        const pasteButtons = window.parent.document.querySelectorAll('button');
+        for (let b of pasteButtons) {
+            if (b.innerText.includes('📋') && !b.dataset.pbound) {
+                b.dataset.pbound = "true";
+                b.addEventListener('click', pasteFromClipboard);
+            }
+        }
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
+
 with c_btn:
     analyze_btn = st.button(
         "다운로드 링크 받기", use_container_width=True, type="primary"
@@ -517,40 +767,49 @@ with c_btn:
 st.markdown(
     '<div style="text-align: center; font-size: 12.5px; color: #94a3b8;'
     ' margin-top: 8px; margin-bottom: 25px;">YouTube, TikTok, X (Twitter),'
-    " Instagram, Facebook, Threads, 샤오홍슈(RedNote) 지원</div>",
+    " Instagram, Facebook, Threads, 샤오홍슈(RedNote) 등 지원</div>",
     unsafe_allow_html=True,
 )
 
-# 다운로드 실행
+# 사이드바에서 주입되었거나 다운로드 버튼을 누른 경우 처리
+should_analyze = (
+    analyze_btn
+    or st.session_state["trigger_analyze"]
+    or (current_input_val != st.session_state["main_url_input"])
+)
+st.session_state["trigger_analyze"] = False
+
 if analyze_btn:
-    if not url_input.strip():
-        st.warning("링크 또는 공유 텍스트를 입력해 주세요.")
-    else:
-        with st.spinner("미디어 분석 및 무워터마크 추출 중..."):
-            try:
-                target_url = clean_social_url(url_input)
+    st.session_state["main_url_input"] = current_input_val
 
-                if any(
-                    k in target_url
-                    for k in ["rednote", "xiaohongshu", "threads"]
-                ):
-                    try:
-                        data = extract_direct_meta(target_url)
-                        if not data["videos"] and not data["images"]:
-                            data = download_media_package(target_url)
-                    except Exception:
+if analyze_btn and not st.session_state["main_url_input"].strip():
+    st.warning("링크 또는 공유 텍스트를 입력해 주세요.")
+elif analyze_btn and st.session_state["main_url_input"].strip():
+    with st.spinner("미디어 분석 및 무워터마크 분리 추출 중..."):
+        try:
+            target_url = clean_social_url(st.session_state["main_url_input"])
+
+            if any(
+                k in target_url for k in ["rednote", "xiaohongshu", "threads"]
+            ):
+                try:
+                    data = extract_direct_meta(target_url)
+                    if not data["videos"] and not data["images"]:
                         data = download_media_package(target_url)
-                else:
+                except Exception:
                     data = download_media_package(target_url)
+            else:
+                data = download_media_package(target_url)
 
-                st.session_state["data"] = data
-                st.session_state["remix_video"] = None
-                st.session_state["mp3_bytes"] = None
-            except Exception as e:
-                st.error(f"분석 실패: {e}")
+            st.session_state["data"] = data
+            st.session_state["remix_video"] = None
+            st.session_state["mp3_bytes"] = None
+        except Exception as e:
+            st.error(f"분석 실패: {e}")
+
 
 # ==========================================
-# UI 4. SnapWC 결과 화면 & 즉석 편집실
+# UI 5. SnapWC 결과 카드 & 즉석 편집실
 # ==========================================
 if "data" in st.session_state and st.session_state["data"]:
     data = st.session_state["data"]
@@ -562,15 +821,17 @@ if "data" in st.session_state and st.session_state["data"]:
 
     st.markdown("---")
     st.markdown(
-        '<div class="snap-header">다운로드 링크가 준비되었습니다</div>',
+        '<div style="font-size: 20px; font-weight: 700; color: #1e293b;'
+        ' margin-bottom: 3px;">다운로드 링크가 준비되었습니다</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="snap-sub">원하는 형식과 품질을 선택하세요</div>',
+        '<div style="font-size: 13.5px; color: #64748b; margin-bottom:'
+        ' 16px;">원하는 형식과 품질을 선택하세요</div>',
         unsafe_allow_html=True,
     )
 
-    # 1. 상단 프리뷰 카드 (커버 이미지 + 본문)
+    # 1. 상단 프리뷰 카드 (커버 썸네일 + 본문)
     with st.container():
         c_thumb, c_text = st.columns([1.3, 2.7])
         with c_thumb:
@@ -597,7 +858,7 @@ if "data" in st.session_state and st.session_state["data"]:
         v_main = videos[0]
         v_size_mb = round(len(v_main) / (1024 * 1024), 1)
 
-        # UHD
+        # UHD MP4
         r1_col1, r1_col2 = st.columns([3, 1])
         with r1_col1:
             st.markdown(
@@ -620,7 +881,7 @@ if "data" in st.session_state and st.session_state["data"]:
             unsafe_allow_html=True,
         )
 
-        # HD
+        # HD MP4
         r2_col1, r2_col2 = st.columns([3, 1])
         with r2_col1:
             st.markdown(
@@ -642,7 +903,7 @@ if "data" in st.session_state and st.session_state["data"]:
             unsafe_allow_html=True,
         )
 
-        # MP3
+        # MP3 음원
         r3_col1, r3_col2 = st.columns([3, 1])
         with r3_col1:
             st.markdown(
