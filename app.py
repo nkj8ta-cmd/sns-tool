@@ -25,7 +25,7 @@ st.markdown(
     """
 <style>
     .block-container {
-        padding-top: 2.2rem !important;
+        padding-top: 2rem !important;
         padding-bottom: 3.5rem !important;
         max-width: 980px;
     }
@@ -64,20 +64,52 @@ st.markdown(
         padding: 2px 6px;
         border-radius: 4px;
     }
+    /* 모드 전환 탭 버튼 스타일 */
+    div[role="radiogroup"] {
+        display: flex;
+        justify-content: center;
+        gap: 12px;
+        margin-bottom: 22px;
+    }
+    div[role="radiogroup"] label {
+        background: #ffffff;
+        border: 1.5px solid #cbd5e1;
+        padding: 10px 22px;
+        border-radius: 25px;
+        cursor: pointer;
+        font-size: 14.5px;
+        font-weight: 700;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        transition: all 0.2s ease;
+    }
+    div[role="radiogroup"] label:hover {
+        border-color: #2563eb;
+        color: #2563eb;
+    }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 # 세션 상태 초기화
+if "mode_choice" not in st.session_state:
+    st.session_state["mode_choice"] = "⚡ [모드 1] 단일 영상 정밀 세탁 & 대본"
+if "m1_url" not in st.session_state:
+    st.session_state["m1_url"] = ""
+if "mu1" not in st.session_state:
+    st.session_state["mu1"] = ""
+if "mu2" not in st.session_state:
+    st.session_state["mu2"] = ""
+if "mu3" not in st.session_state:
+    st.session_state["mu3"] = ""
+if "mu4" not in st.session_state:
+    st.session_state["mu4"] = ""
 if "single_data" not in st.session_state:
     st.session_state["single_data"] = None
 if "mashup_data" not in st.session_state:
     st.session_state["mashup_data"] = None
-if "m1_url_val" not in st.session_state:
-    st.session_state["m1_url_val"] = ""
-if "mu_urls" not in st.session_state:
-    st.session_state["mu_urls"] = ["", "", "", ""]
+if "auto_run_m1" not in st.session_state:
+    st.session_state["auto_run_m1"] = False
 
 
 # ==========================================
@@ -398,7 +430,7 @@ def generate_rich_selling_scripts(kor_title, kor_desc):
 
 
 # ==========================================
-# 5. 실시간 중국 바이럴 소싱 추천 DB (동일 제품 5개 클립 묶음)
+# 5. 실시간 중국 바이럴 소싱 추천 DB (동일 제품 5개 클립 세트)
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_trending_china_products():
@@ -595,7 +627,7 @@ def get_trending_china_products():
 
 
 # ==========================================
-# UI 영역
+# UI 메인 헤더
 # ==========================================
 st.markdown(
     '<div class="seller-title">🛒 SNS 쇼핑 셀러 스튜디오</div>',
@@ -607,10 +639,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# 사이드바: 1) 기존 검색창 유지 + 2) 실시간 5개 클립 묶음 자동 추천
+# 사이드바: 1) 직접 검색창 + 2) 실시간 추천 & 원클릭 연동 버튼 완벽 탑재
 with st.sidebar:
     st.markdown("### 🔍 1. 키워드 직접 검색")
-    st.caption("궁금한 제품을 한글로 치면 중국 현지 검색창이 열립니다.")
+    st.caption("궁금한 제품명을 한글로 치면 중국 검색창이 열립니다.")
 
     search_kw = st.text_input(
         "소싱할 제품명",
@@ -641,9 +673,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🔥 2. 실시간 중국 바이럴 추천")
-    st.caption(
-        "현지에서 폭발 중인 아이템입니다. 각 5개 클립을 확인하고 소싱하세요!"
-    )
+    st.caption("클릭 한 번으로 단일 세탁창이나 일괄 짜깁기 창으로 바로 보냅니다.")
 
     trending_items = get_trending_china_products()
 
@@ -653,6 +683,29 @@ with st.sidebar:
         ):
             st.caption(f"💡 {prod['point']}")
 
+            # 요청하신 [🚀 5개 클립 일괄 짜깁기로 보내기] 버튼 탑재!
+            if st.button(
+                "🚀 5개 클립 일괄 짜깁기로 보내기",
+                key=f"send_all_{p_idx}",
+                use_container_width=True,
+                type="primary",
+            ):
+                st.session_state["mode_choice"] = (
+                    "🧩 [모드 2] 동일 제품 3~4개 교차 짜깁기 (매시업 스튜디오)"
+                )
+                st.session_state["mu1"] = prod["clips"][0]["url"]
+                st.session_state["mu2"] = prod["clips"][1]["url"]
+                st.session_state["mu3"] = prod["clips"][2]["url"]
+                st.session_state["mu4"] = prod["clips"][3]["url"]
+                st.rerun()
+
+            st.markdown(
+                "<hr style='margin: 8px 0; border: none; border-top: 1px solid"
+                " #e2e8f0;'>",
+                unsafe_allow_html=True,
+            )
+
+            # 개별 클립 리스트
             for c_idx, clip in enumerate(prod["clips"]):
                 tag_html = (
                     '<span class="tag-clean">✨ 무자막 우선</span>'
@@ -667,13 +720,17 @@ with st.sidebar:
 
                 b_col1, b_col2 = st.columns([1.5, 1])
                 with b_col1:
-                    # 단일 세탁창으로 바로 보내기
+                    # 클릭 시 모드 1로 이동하고 링크를 즉시 주입하여 바로 반응하도록 수정!
                     if st.button(
                         "⚡ 이 클립 받기",
                         key=f"pick_{p_idx}_{c_idx}",
                         use_container_width=True,
                     ):
-                        st.session_state["m1_url_val"] = clip["url"]
+                        st.session_state["mode_choice"] = (
+                            "⚡ [모드 1] 단일 영상 정밀 세탁 & 대본"
+                        )
+                        st.session_state["m1_url"] = clip["url"]
+                        st.session_state["auto_run_m1"] = True
                         st.rerun()
                 with b_col2:
                     st.link_button(
@@ -681,23 +738,29 @@ with st.sidebar:
                     )
 
 
-# 메인 모드 탭
-mode_tab1, mode_tab2 = st.tabs([
-    "⚡ [모드 1] 단일 영상 정밀 세탁 & 대본",
-    "🧩 [모드 2] 동일 제품 3~4개 교차 짜깁기 (매시업 스튜디오)",
-])
+# ==========================================
+# 메인 모드 선택 바 (라디오 버튼 연동으로 프로그래밍 제어 가능)
+# ==========================================
+mode_selection = st.radio(
+    "작업 모드 선택",
+    options=[
+        "⚡ [모드 1] 단일 영상 정밀 세탁 & 대본",
+        "🧩 [모드 2] 동일 제품 3~4개 교차 짜깁기 (매시업 스튜디오)",
+    ],
+    key="mode_choice",
+    label_visibility="collapsed",
+)
 
 
 # ==========================================
 # 모드 1: 단일 영상 세탁 & 대본
 # ==========================================
-with mode_tab1:
+if mode_selection == "⚡ [모드 1] 단일 영상 정밀 세탁 & 대본":
     st.markdown("##### 1. 영상 링크 입력 (RedNote, 도우인, 틱톡, 릴스)")
     c_in1, c_in2 = st.columns([4, 1])
     with c_in1:
         s_url = st.text_input(
             "URL",
-            value=st.session_state["m1_url_val"],
             placeholder="영상 공유 링크를 붙여넣으세요",
             label_visibility="collapsed",
             key="m1_url",
@@ -737,7 +800,11 @@ with mode_tab1:
             help="새 한국어 더빙/BGM을 입힐 때 체크",
         )
 
-    if s_btn and s_url.strip():
+    # 직접 버튼을 누르거나 사이드바에서 '이 클립 받기'를 눌렀을 때 실행
+    trigger_m1 = s_btn or st.session_state.get("auto_run_m1", False)
+    st.session_state["auto_run_m1"] = False
+
+    if trigger_m1 and s_url.strip():
         with st.spinner("미디어 다운로드 및 FFmpeg 자막 블러 가공 중..."):
             try:
                 target_url = clean_social_url(s_url)
@@ -760,7 +827,6 @@ with mode_tab1:
             except Exception as e:
                 st.error(f"작업 실패: {e}")
 
-    # 결과물 출력 (다운로드 버튼 바로 밑에 대본 배치)
     if st.session_state.get("single_data"):
         sd = st.session_state["single_data"]
         st.markdown("---")
@@ -773,7 +839,6 @@ with mode_tab1:
             st.markdown(f"**제품명/제목:** {sd['title']}")
             st.text_area("번역된 원본 내용", sd["desc"], height=120)
 
-            # 다운로드 버튼 영역
             st.download_button(
                 "⬇️ 세탁 완료 영상 다운로드 (MP4)",
                 sd["remix_v"],
@@ -790,9 +855,6 @@ with mode_tab1:
                 use_container_width=True,
             )
 
-        # -------------------------------------------------------------
-        # 다운로드 버튼 바로 밑: 4대 플랫폼 판매 대본
-        # -------------------------------------------------------------
         st.markdown("---")
         st.markdown("#### ✍️ 영상 맞춤 4대 플랫폼 판매 대본 (원클릭 복사)")
         st.caption(
@@ -820,32 +882,18 @@ with mode_tab1:
 # ==========================================
 # 모드 2: 동일 제품 3~4개 교차 짜깁기 (매시업 스튜디오)
 # ==========================================
-with mode_tab2:
+else:
     st.markdown("##### 🧩 동일 제품 영상 3~4개 교차 편집기")
     st.caption(
         "동일 제품의 다른 앵글 링크를 넣으면, 각 영상에서 3~4초씩 추출해 1080x1920 세로형 완제품 쇼핑 영상으로 결합합니다."
     )
 
-    m_url1 = st.text_input(
-        "🔗 제품 영상 링크 1 (메인 시연)",
-        value=st.session_state["mu_urls"][0],
-        key="mu1",
-    )
-    m_url2 = st.text_input(
-        "🔗 제품 영상 링크 2 (디테일/언박싱)",
-        value=st.session_state["mu_urls"][1],
-        key="mu2",
-    )
+    m_url1 = st.text_input("🔗 제품 영상 링크 1 (메인 시연)", key="mu1")
+    m_url2 = st.text_input("🔗 제품 영상 링크 2 (디테일/언박싱)", key="mu2")
     m_url3 = st.text_input(
-        "🔗 제품 영상 링크 3 (비포/애프터, 선택사항)",
-        value=st.session_state["mu_urls"][2],
-        key="mu3",
+        "🔗 제품 영상 링크 3 (비포/애프터, 선택사항)", key="mu3"
     )
-    m_url4 = st.text_input(
-        "🔗 제품 영상 링크 4 (추가 앵글, 선택사항)",
-        value=st.session_state["mu_urls"][3],
-        key="mu4",
-    )
+    m_url4 = st.text_input("🔗 제품 영상 링크 4 (추가 앵글, 선택사항)", key="mu4")
 
     c_mopt1, c_mopt2 = st.columns(2)
     with c_mopt1:
