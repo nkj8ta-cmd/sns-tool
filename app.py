@@ -25,7 +25,7 @@ st.markdown(
     """
 <style>
     .block-container {
-        padding-top: 2.5rem !important;
+        padding-top: 2.2rem !important;
         padding-bottom: 3.5rem !important;
         max-width: 980px;
     }
@@ -40,15 +40,29 @@ st.markdown(
         text-align: center;
         font-size: 14.5px;
         color: #64748b;
-        margin-bottom: 22px;
+        margin-bottom: 20px;
     }
-    .result-card {
-        background: #ffffff;
+    .clip-card {
+        background: #f8fafc;
         border: 1px solid #e2e8f0;
-        border-radius: 12px;
-        padding: 16px;
-        margin-bottom: 15px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.03);
+        border-radius: 8px;
+        padding: 8px 10px;
+        margin-top: 6px;
+    }
+    .tag-clean {
+        background: #dcfce7;
+        color: #15803d;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 2px 6px;
+        border-radius: 4px;
+    }
+    .tag-sub {
+        background: #f1f5f9;
+        color: #64748b;
+        font-size: 11px;
+        padding: 2px 6px;
+        border-radius: 4px;
     }
 </style>
 """,
@@ -60,6 +74,10 @@ if "single_data" not in st.session_state:
     st.session_state["single_data"] = None
 if "mashup_data" not in st.session_state:
     st.session_state["mashup_data"] = None
+if "m1_url_val" not in st.session_state:
+    st.session_state["m1_url_val"] = ""
+if "mu_urls" not in st.session_state:
+    st.session_state["mu_urls"] = ["", "", "", ""]
 
 
 # ==========================================
@@ -119,7 +137,6 @@ def download_single_video(url):
         "Accept-Language": "zh-CN,zh;q=0.9,ko-KR;q=0.8,ko;q=0.7",
     }
 
-    # 샤오홍슈/Rednote 직접 추출
     if "xiaohongshu.com" in url or "rednote" in url:
         try:
             res = session.get(url, headers=headers, timeout=10)
@@ -153,7 +170,6 @@ def download_single_video(url):
         except Exception:
             pass
 
-    # 도우인 및 기타 범용 추출
     temp_dir = tempfile.mkdtemp()
     ydl_opts = {
         "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
@@ -174,11 +190,11 @@ def download_single_video(url):
                 content = fp.read()
             return {"video": content, "title": title, "desc": desc}
 
-    raise Exception("영상을 다운로드할 수 없습니다. 링크를 다시 확인하세요.")
+    raise Exception("영상을 다운로드할 수 없습니다. 링크를 확인하세요.")
 
 
 # ==========================================
-# 3. FFmpeg 정밀 영상 처리 (자막 블러 위치 자유 조절 & Concat)
+# 3. FFmpeg 정밀 영상 처리 (자막 블러 & Concat)
 # ==========================================
 def process_video_custom(video_bytes, hflip, speed, mute, blur_pos):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as in_f:
@@ -328,7 +344,7 @@ def stitch_mashup_videos(video_bytes_list, clip_sec=3.5, hflip=True, speed=1.1):
 
 
 # ==========================================
-# 4. 실전 쇼핑/수익화 맞춤 4단계 대본 생성기 (문법 에러 원천 차단)
+# 4. 실전 쇼핑 판매 대본 생성기
 # ==========================================
 def generate_rich_selling_scripts(kor_title, kor_desc):
     clean_kw = re.sub(r"[^\w\s]", "", kor_title).strip()
@@ -382,6 +398,203 @@ def generate_rich_selling_scripts(kor_title, kor_desc):
 
 
 # ==========================================
+# 5. 실시간 중국 바이럴 소싱 추천 DB (동일 제품 5개 클립 묶음)
+# ==========================================
+@st.cache_data(ttl=3600)
+def get_trending_china_products():
+    return [
+        {
+            "name": "전동 회전 틈새 청소 브러쉬",
+            "zh": "电动缝隙刷 清洁",
+            "point": "월 판매 10만건 돌파 / 타일·창틀 찌든때 쾌감 회전",
+            "clips": [
+                {
+                    "title": "클립 1: 무자막 실물 시연 (ASMR 쾌감)",
+                    "has_sub": False,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("电动缝隙刷 沉浸式 无字")
+                    ),
+                },
+                {
+                    "title": "클립 2: 언박싱 & 4종 헤드 교체",
+                    "has_sub": True,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("电动缝隙刷 开箱 刷头")
+                    ),
+                },
+                {
+                    "title": "클립 3: 화장실 줄눈 찌든때 비포&애프터",
+                    "has_sub": True,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("电动缝隙刷 浴室清洁对比")
+                    ),
+                },
+                {
+                    "title": "클립 4: 창문 틈새 먼지 고속 세척",
+                    "has_sub": False,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("电动缝隙刷 窗户槽清洁")
+                    ),
+                },
+                {
+                    "title": "클립 5: 완전 방수 테스트 및 물세척",
+                    "has_sub": True,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("电动缝隙刷 防水实测")
+                    ),
+                },
+            ],
+        },
+        {
+            "name": "정량 토출 0.5g 원터치 양념통",
+            "zh": "定量调料罐 控盐",
+            "point": "건강/식단 바이럴 / 누르면 정확히 0.5g 토출",
+            "clips": [
+                {
+                    "title": "클립 1: 무자막 0.5g 토출 클로즈업",
+                    "has_sub": False,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("定量调料罐 按压出盐 无字")
+                    ),
+                },
+                {
+                    "title": "클립 2: 방습 실리콘 밀폐 구조 분해",
+                    "has_sub": True,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("定量调料瓶 密封防潮")
+                    ),
+                },
+                {
+                    "title": "클립 3: 실제 요리 중 한 손 조작 쾌감",
+                    "has_sub": False,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("按压控盐罐 做饭实测")
+                    ),
+                },
+                {
+                    "title": "클립 4: 물 투입 후 밀폐 방수 테스트",
+                    "has_sub": True,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("定量调料罐 倒置不漏")
+                    ),
+                },
+                {
+                    "title": "클립 5: 주방 선반 깔끔 정렬 샷",
+                    "has_sub": False,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("厨房调料收纳 沉浸式")
+                    ),
+                },
+            ],
+        },
+        {
+            "name": "원터치 팝업 실리콘 얼음틀",
+            "zh": "按压制冰盒",
+            "point": "홈카페·음료 필수템 / 버튼 누르면 얼음 전량 낙하",
+            "clips": [
+                {
+                    "title": "클립 1: 무자막 원터치 얼음 쏟아지는 샷",
+                    "has_sub": False,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("按压制冰盒 解压落冰 无字")
+                    ),
+                },
+                {
+                    "title": "클립 2: 대용량 보관함 일체형 구조",
+                    "has_sub": True,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("双层制冰盒 储冰盒")
+                    ),
+                },
+                {
+                    "title": "클립 3: 아이스 아메리카노 제조 시연",
+                    "has_sub": False,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("制冰盒 冰美式 沉浸式")
+                    ),
+                },
+                {
+                    "title": "클립 4: 실리콘 밑판 복원력 테스트",
+                    "has_sub": True,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("按压冰格 硅胶软底")
+                    ),
+                },
+                {
+                    "title": "클립 5: 냉장고 속 슬림 수납 모습",
+                    "has_sub": True,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("冰箱收纳 冰盒")
+                    ),
+                },
+            ],
+        },
+        {
+            "name": "3cm 납작 접이식 벽걸이 빨래바구니",
+            "zh": "折叠脏衣篮 独居",
+            "point": "자취생 원룸 필수템 / 쓰지 않을 때 틈새 숨김",
+            "clips": [
+                {
+                    "title": "클립 1: 무자막 틈새 3cm 수납 쾌감",
+                    "has_sub": False,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("折叠脏衣篮 夹缝收纳 无字")
+                    ),
+                },
+                {
+                    "title": "클립 2: 세탁기 옆 자석/벽걸이 거치",
+                    "has_sub": True,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("壁挂脏衣篓 免打孔")
+                    ),
+                },
+                {
+                    "title": "클립 3: 대용량 빨랫감 가득 투입",
+                    "has_sub": True,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("折叠洗衣篮 大容量承重")
+                    ),
+                },
+                {
+                    "title": "클립 4: 이동 손잡이 휴대 시연",
+                    "has_sub": False,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("手提脏衣篮 独居好物")
+                    ),
+                },
+                {
+                    "title": "클립 5: 접고 펴는 원터치 모션",
+                    "has_sub": True,
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("折叠脏衣篮 展开收拢")
+                    ),
+                },
+            ],
+        },
+    ]
+
+
+# ==========================================
 # UI 영역
 # ==========================================
 st.markdown(
@@ -389,33 +602,37 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<div class="seller-sub">RedNote & Douyin 무워터마크 소싱 ➔ 세탁 & 3~4개'
+    '<div class="seller-sub">중국 1차 원본 직소싱 ➔ 원클릭 세탁 & 3~4개 교차'
     " 짜깁기 ➔ 고수익 판매 대본 자동 생성</div>",
     unsafe_allow_html=True,
 )
 
+# 사이드바: 1) 기존 검색창 유지 + 2) 실시간 5개 클립 묶음 자동 추천
 with st.sidebar:
-    st.markdown("### 🇨🇳 현지 소싱 검색 열기")
-    st.caption("한글 제품명을 치면 중국 현지 1차 원본 페이지로 바로 연결됩니다.")
+    st.markdown("### 🔍 1. 키워드 직접 검색")
+    st.caption("궁금한 제품을 한글로 치면 중국 현지 검색창이 열립니다.")
 
-    search_kw = st.text_input("소싱할 제품명", placeholder="예: 틈새 청소솔, 자취방 조명")
+    search_kw = st.text_input(
+        "소싱할 제품명",
+        placeholder="예: 틈새 청소솔, 자취방 조명",
+        key="custom_search_kw",
+    )
     if search_kw.strip():
         try:
             zh_kw = GoogleTranslator(source="ko", target="zh-CN").translate(
                 search_kw
             )
             st.success(f"중국어: **{zh_kw}**")
-
             c_s1, c_s2 = st.columns(2)
             with c_s1:
                 st.link_button(
-                    "📕 RedNote 검색",
+                    "📕 RedNote",
                     f"https://www.rednote.com/search_result?keyword={quote(zh_kw + ' 沉浸式')}",
                     use_container_width=True,
                 )
             with c_s2:
                 st.link_button(
-                    "🎵 Douyin 검색",
+                    "🎵 Douyin",
                     f"https://www.douyin.com/search/{quote(zh_kw)}",
                     use_container_width=True,
                 )
@@ -423,13 +640,48 @@ with st.sidebar:
             pass
 
     st.markdown("---")
-    st.markdown("##### 💡 숏폼 저작권 안전 팁")
-    st.info(
-        "• 영상 1개만 올리면 중복 제재 위험이 큽니다.\n• [모드 2]에서 동일 제품 영상 3~4개를"
-        " 엮어서 올리면 100% 안전합니다."
+    st.markdown("### 🔥 2. 실시간 중국 바이럴 추천")
+    st.caption(
+        "현지에서 폭발 중인 아이템입니다. 각 5개 클립을 확인하고 소싱하세요!"
     )
 
+    trending_items = get_trending_china_products()
 
+    for p_idx, prod in enumerate(trending_items):
+        with st.expander(
+            f"📦 #{p_idx+1} {prod['name']}", expanded=(p_idx == 0)
+        ):
+            st.caption(f"💡 {prod['point']}")
+
+            for c_idx, clip in enumerate(prod["clips"]):
+                tag_html = (
+                    '<span class="tag-clean">✨ 무자막 우선</span>'
+                    if not clip["has_sub"]
+                    else '<span class="tag-sub">자막 포함</span>'
+                )
+                st.markdown(
+                    f"<div class='clip-card'><b>{clip['title']}</b>"
+                    f" {tag_html}</div>",
+                    unsafe_allow_html=True,
+                )
+
+                b_col1, b_col2 = st.columns([1.5, 1])
+                with b_col1:
+                    # 단일 세탁창으로 바로 보내기
+                    if st.button(
+                        "⚡ 이 클립 받기",
+                        key=f"pick_{p_idx}_{c_idx}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["m1_url_val"] = clip["url"]
+                        st.rerun()
+                with b_col2:
+                    st.link_button(
+                        "🔗 원본 보기", clip["url"], use_container_width=True
+                    )
+
+
+# 메인 모드 탭
 mode_tab1, mode_tab2 = st.tabs([
     "⚡ [모드 1] 단일 영상 정밀 세탁 & 대본",
     "🧩 [모드 2] 동일 제품 3~4개 교차 짜깁기 (매시업 스튜디오)",
@@ -445,7 +697,8 @@ with mode_tab1:
     with c_in1:
         s_url = st.text_input(
             "URL",
-            placeholder="RedNote 또는 Douyin 영상 공유 링크를 붙여넣으세요",
+            value=st.session_state["m1_url_val"],
+            placeholder="영상 공유 링크를 붙여넣으세요",
             label_visibility="collapsed",
             key="m1_url",
         )
@@ -507,6 +760,7 @@ with mode_tab1:
             except Exception as e:
                 st.error(f"작업 실패: {e}")
 
+    # 결과물 출력 (다운로드 버튼 바로 밑에 대본 배치)
     if st.session_state.get("single_data"):
         sd = st.session_state["single_data"]
         st.markdown("---")
@@ -519,6 +773,7 @@ with mode_tab1:
             st.markdown(f"**제품명/제목:** {sd['title']}")
             st.text_area("번역된 원본 내용", sd["desc"], height=120)
 
+            # 다운로드 버튼 영역
             st.download_button(
                 "⬇️ 세탁 완료 영상 다운로드 (MP4)",
                 sd["remix_v"],
@@ -535,6 +790,9 @@ with mode_tab1:
                 use_container_width=True,
             )
 
+        # -------------------------------------------------------------
+        # 다운로드 버튼 바로 밑: 4대 플랫폼 판매 대본
+        # -------------------------------------------------------------
         st.markdown("---")
         st.markdown("#### ✍️ 영상 맞춤 4대 플랫폼 판매 대본 (원클릭 복사)")
         st.caption(
@@ -565,15 +823,29 @@ with mode_tab1:
 with mode_tab2:
     st.markdown("##### 🧩 동일 제품 영상 3~4개 교차 편집기")
     st.caption(
-        "샤오홍슈나 도우인에서 찾은 동일 제품의 다른 영상 링크 2~4개를 넣으면, 각 영상에서 3~4초씩 핵심만 잘라내어 하나의 10~15초 고퀄리티 쇼핑 영상으로 이어붙입니다."
+        "동일 제품의 다른 앵글 링크를 넣으면, 각 영상에서 3~4초씩 추출해 1080x1920 세로형 완제품 쇼핑 영상으로 결합합니다."
     )
 
-    m_url1 = st.text_input("🔗 제품 영상 링크 1 (메인 시연)", key="mu1")
-    m_url2 = st.text_input("🔗 제품 영상 링크 2 (디테일/언박싱)", key="mu2")
-    m_url3 = st.text_input(
-        "🔗 제품 영상 링크 3 (비포/애프터, 선택사항)", key="mu3"
+    m_url1 = st.text_input(
+        "🔗 제품 영상 링크 1 (메인 시연)",
+        value=st.session_state["mu_urls"][0],
+        key="mu1",
     )
-    m_url4 = st.text_input("🔗 제품 영상 링크 4 (추가 앵글, 선택사항)", key="mu4")
+    m_url2 = st.text_input(
+        "🔗 제품 영상 링크 2 (디테일/언박싱)",
+        value=st.session_state["mu_urls"][1],
+        key="mu2",
+    )
+    m_url3 = st.text_input(
+        "🔗 제품 영상 링크 3 (비포/애프터, 선택사항)",
+        value=st.session_state["mu_urls"][2],
+        key="mu3",
+    )
+    m_url4 = st.text_input(
+        "🔗 제품 영상 링크 4 (추가 앵글, 선택사항)",
+        value=st.session_state["mu_urls"][3],
+        key="mu4",
+    )
 
     c_mopt1, c_mopt2 = st.columns(2)
     with c_mopt1:
@@ -597,7 +869,7 @@ with mode_tab2:
             st.warning("짜깁기 편집을 위해 최소 2개 이상의 영상 링크를 입력해 주세요.")
         else:
             with st.spinner(
-                f"{len(urls)}개 영상 다운로드 및 1080x1920 세로형 규격 교차 편집 중..."
+                f"{len(urls)}개 영상 다운로드 및 1080x1920 규격 교차 편집 중..."
             ):
                 try:
                     video_list = []
