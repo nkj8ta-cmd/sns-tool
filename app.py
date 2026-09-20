@@ -50,14 +50,6 @@ st.markdown(
         margin-bottom: 15px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.03);
     }
-    .script-box {
-        background: #f8fafc;
-        border: 1px solid #cbd5e1;
-        border-radius: 8px;
-        padding: 12px;
-        font-size: 14px;
-        line-height: 1.6;
-    }
 </style>
 """,
     unsafe_allow_html=True,
@@ -71,7 +63,7 @@ if "mashup_data" not in st.session_state:
 
 
 # ==========================================
-# 1. 중국어 번역 및 본문 분석기
+# 1. 번역 및 URL 정제 엔진
 # ==========================================
 def translate_zh_to_ko(text):
     if not text or text.strip() == "":
@@ -161,7 +153,7 @@ def download_single_video(url):
         except Exception:
             pass
 
-    # 도우인 및 기타 범용 yt-dlp 추출
+    # 도우인 및 기타 범용 추출
     temp_dir = tempfile.mkdtemp()
     ydl_opts = {
         "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
@@ -186,7 +178,7 @@ def download_single_video(url):
 
 
 # ==========================================
-# 3. FFmpeg 정밀 영상 처리 (자막 블러 위치 자유 조절 & 합치기)
+# 3. FFmpeg 정밀 영상 처리 (자막 블러 위치 자유 조절 & Concat)
 # ==========================================
 def process_video_custom(video_bytes, hflip, speed, mute, blur_pos):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as in_f:
@@ -201,7 +193,6 @@ def process_video_custom(video_bytes, hflip, speed, mute, blur_pos):
     if speed != 1.0:
         filters.append(f"setpts={1.0 / speed}*PTS")
 
-    # 자막 위치별 블러 오버레이 (Y축 시작점 및 두께 조절)
     if blur_pos != "블러 없음":
         pos_map = {
             "하단 자막 (바닥 20%)": (0.80, 0.20),
@@ -255,12 +246,10 @@ def process_video_custom(video_bytes, hflip, speed, mute, blur_pos):
     return video_bytes
 
 
-# 3~4개 영상 컷편집 & 원클릭 합치기 엔진 (Concat)
 def stitch_mashup_videos(video_bytes_list, clip_sec=3.5, hflip=True, speed=1.1):
     temp_files = []
     trimmed_files = []
 
-    # 1) 각 영상 임시 저장 및 3~4초 구간 추출
     for idx, v_b in enumerate(video_bytes_list):
         t_in = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
         t_in.write(v_b)
@@ -268,7 +257,6 @@ def stitch_mashup_videos(video_bytes_list, clip_sec=3.5, hflip=True, speed=1.1):
         temp_files.append(t_in.name)
 
         t_out = t_in.name.replace(".mp4", f"_trim_{idx}.mp4")
-        # 1080x1920 세로형 규격 강제 통일 및 자르기
         trim_cmd = [
             "ffmpeg",
             "-y",
@@ -298,7 +286,6 @@ def stitch_mashup_videos(video_bytes_list, clip_sec=3.5, hflip=True, speed=1.1):
     if not trimmed_files:
         return None
 
-    # 2) 파일 목록 리스트 작성 후 Concat
     list_file = tempfile.NamedTemporaryFile(
         mode="w", suffix=".txt", delete=False
     )
@@ -330,7 +317,6 @@ def stitch_mashup_videos(video_bytes_list, clip_sec=3.5, hflip=True, speed=1.1):
             result_bytes = f.read()
         os.remove(final_out)
 
-    # 잔여 임시 파일 정리
     for f in temp_files + trimmed_files + [list_file.name]:
         if os.path.exists(f):
             try:
@@ -342,55 +328,50 @@ def stitch_mashup_videos(video_bytes_list, clip_sec=3.5, hflip=True, speed=1.1):
 
 
 # ==========================================
-# 4. 실전 쇼핑/수익화 맞춤 4단계 고품질 대본 생성기
+# 4. 실전 쇼핑/수익화 맞춤 4단계 대본 생성기 (문법 에러 원천 차단)
 # ==========================================
 def generate_rich_selling_scripts(kor_title, kor_desc):
-    # 핵심 단어 추출
     clean_kw = re.sub(r"[^\w\s]", "", kor_title).strip()
     words = clean_kw.split()
     product_name = " ".join(words[:3]) if words else "이 꿀템"
 
-    # 1. 스레드 (Threads) 전용 판매 대본 (쿠팡/토스/프로필 링크 클릭 유도)
-    threads_script = f"""자취 5년차인데 솔직히 이거 왜 이제 알았나 싶네요... 
+    threads_script = (
+        "자취 5년차인데 솔직히 이거 왜 이제 알았나 싶네요... \n\n"
+        f"샤오홍슈에서 난리 난 {product_name} 써봤는데 삶의 질이 달라집니다.\n"
+        "기존에 쓰던 건 청소/정리할 때마다 손목 아프고 시간도 엄청 잡아먹었는데, 이건 그냥 갖다 대기만 하면 3초 만에 끝나네요 ㅋㅋㅋ\n\n"
+        f"{kor_desc[:120]}...\n\n"
+        "친구들한테 단톡방에 뿌렸더니 다들 어디서 샀냐고 난리네요.\n"
+        "혹시 궁금하신 분 계시면 좌표 댓글로 남겨둘게요!"
+    )
 
-샤오홍슈에서 난리 난 {product_name} 써봤는데 삶의 질이 달라집니다.
-기존에 쓰던 건 청소/정리할 때마다 손목 아프고 시간도 엄청 잡아먹었는데, 이건 그냥 갖다 대기만 하면 3초 만에 끝나네요 ㅋㅋㅋ
+    shorts_script = (
+        "[0~3초 시선 후킹]\n"
+        f'"아직도 고생하면서 쓰시나요? 쿠팡 직원도 몰래 산다는 {product_name} 실물입니다."\n\n'
+        "[3~12초 결핍 및 공감대 자극]\n"
+        '"매번 귀찮고 찌든 때 안 지워져서 스트레스 받으셨죠? 기존 제품들은 힘만 들고 제대로 닦이지도 않았습니다."\n\n'
+        "[12~24초 기능 시연 & 반전]\n"
+        '"이건 갖다 대기만 하면 고속으로 회전하면서 틈새 먼지까지 싹 밀어냅니다. 방수까지 돼서 물로 헹구면 끝이에요."\n\n'
+        "[24~30초 댓글/링크 유도 CTA]\n"
+        '"가격 대비 만족도 300%입니다. 제품 구매처는 고정 댓글을 확인해 주세요!"'
+    )
 
-{kor_desc[:120]}...
+    reels_script = (
+        "매일 살림/청소/정리 스트레스 받던 분들 집중! 🚨\n"
+        f"샤오홍슈에서 100만 뷰 터진 {product_name} 찐 사용 후기 가져왔어요 🫧\n\n"
+        "장점 3줄 요약:\n"
+        "1. 손목에 힘 하나도 안 들어감\n"
+        "2. 틈새 구석까지 완벽 커버\n"
+        "3. 공간 차지 안 하는 슬림 보관\n\n"
+        "📌 나중에 사려고 찾으면 품절되니 지금 미리 [저장]해두세요!\n"
+        "🔗 제품 상세 정보와 할인가격은 프로필 링크에 걸어둘게요 🤍"
+    )
 
-친구들한테 단톡방에 뿌렸더니 다들 어디서 샀냐고 난리네요.
-혹시 궁금하신 분 계시면 좌표 댓글로 남겨둘게요!"""
-
-    # 2. 유튜브 쇼츠 (Shorts) 30초 고수익 대본
-    shorts_script = f"""[0~3초 시선 후킹]
-"아직도 고생하면서 쓰시나요? 쿠팡 직원도 몰래 산다는 {product_name} 실물입니다."
-
-[3~12초 결핍 및 공감대 자극]
-"매번 귀찮고 찌든 때 안 지워져서 스트레스 받으셨죠? 기존 제품들은 힘만 들고 제대로 닦이지도 않았습니다."
-
-[12~24초 기능 시연 & 반전]
-"이건 갖다 대기만 하면 고속으로 회전하면서 틈새 먼지까지 싹 밀어냅니다. 방수까지 돼서 물로 헹구면 끝이에요."
-
-[24~30초 댓글/링크 유도 CTA]
-"가격 대비 만족도 300%입니다. 제품 구매처는 고정 댓글을 확인해 주세요!""""
-
-    # 3. 인스타그램 릴스 (Reels) 저장/공유 유도형 대본
-    reels_script = f"""매일 살림/청소/정리 스트레스 받던 분들 집중! 🚨
-샤오홍슈에서 100만 뷰 터진 {product_name} 찐 사용 후기 가져왔어요 🫧
-
-장점 3줄 요약:
-1. 손목에 힘 하나도 안 들어감
-2. 틈새 구석까지 완벽 커버
-3. 공간 차지 안 하는 슬림 보관
-
-📌 나중에 사려고 찾으면 품절되니 지금 미리 [저장]해두세요!
-🔗 제품 상세 정보와 할인가격은 프로필 링크에 걸어둘게요 🤍"""
-
-    # 4. 틱톡 (TikTok) 15초 초고속 바이럴 대본
-    tiktok_script = f"""[0~2초] "틱톡 알고리즘이 절 여기로 이끌었습니다..."
-[2~8초] {product_name} 작동 쾌감 영상 노출 (Before ➔ After)
-[8~12초] "솔직히 가격 보고 반신반의했는데 가성비 미쳤습니다."
-[12~15초] "좌표는 프로필 링크 1번에 있어요! #살림꿀템 #자취템 #틱톡추천 #fyp""""
+    tiktok_script = (
+        '[0~2초] "틱톡 알고리즘이 절 여기로 이끌었습니다..."\n'
+        f"[2~8초] {product_name} 작동 쾌감 영상 노출 (Before ➔ After)\n"
+        '[8~12초] "솔직히 가격 보고 반신반의했는데 가성비 미쳤습니다."\n'
+        '[12~15초] "좌표는 프로필 링크 1번에 있어요! #살림꿀템 #자취템 #틱톡추천 #fyp"'
+    )
 
     return {
         "threads": threads_script,
@@ -413,7 +394,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# 사이드바: 실시간 RedNote & Douyin 직소싱 검색창
 with st.sidebar:
     st.markdown("### 🇨🇳 현지 소싱 검색 열기")
     st.caption("한글 제품명을 치면 중국 현지 1차 원본 페이지로 바로 연결됩니다.")
@@ -450,7 +430,6 @@ with st.sidebar:
     )
 
 
-# 메인 2대 작업 모드 탭
 mode_tab1, mode_tab2 = st.tabs([
     "⚡ [모드 1] 단일 영상 정밀 세탁 & 대본",
     "🧩 [모드 2] 동일 제품 3~4개 교차 짜깁기 (매시업 스튜디오)",
@@ -478,7 +457,6 @@ with mode_tab1:
             key="m1_btn",
         )
 
-    # 세탁 옵션 바 (자막 블러 위치 선택 탑재)
     st.markdown("##### ⚙️ 원클릭 세탁 옵션")
     op1, op2, op3, op4 = st.columns(4)
     with op1:
@@ -512,12 +490,10 @@ with mode_tab1:
                 target_url = clean_social_url(s_url)
                 raw_pkg = download_single_video(target_url)
 
-                # FFmpeg 세탁 가공
                 remixed_video = process_video_custom(
                     raw_pkg["video"], opt_flip, opt_spd, opt_mute, opt_blur
                 )
 
-                # 중국어 원문 번역
                 kor_title = translate_zh_to_ko(raw_pkg["title"])
                 kor_desc = translate_zh_to_ko(raw_pkg["desc"])
 
@@ -531,7 +507,6 @@ with mode_tab1:
             except Exception as e:
                 st.error(f"작업 실패: {e}")
 
-    # 결과물 출력 (다운로드 버튼 바로 밑에 대본 배치)
     if st.session_state.get("single_data"):
         sd = st.session_state["single_data"]
         st.markdown("---")
@@ -544,7 +519,6 @@ with mode_tab1:
             st.markdown(f"**제품명/제목:** {sd['title']}")
             st.text_area("번역된 원본 내용", sd["desc"], height=120)
 
-            # 다운로드 버튼 영역
             st.download_button(
                 "⬇️ 세탁 완료 영상 다운로드 (MP4)",
                 sd["remix_v"],
@@ -561,9 +535,6 @@ with mode_tab1:
                 use_container_width=True,
             )
 
-        # -------------------------------------------------------------
-        # 요청하신 위치: 다운로드 버튼 바로 밑에 플랫폼별 상세 판매 대본 배치
-        # -------------------------------------------------------------
         st.markdown("---")
         st.markdown("#### ✍️ 영상 맞춤 4대 플랫폼 판매 대본 (원클릭 복사)")
         st.caption(
@@ -636,7 +607,6 @@ with mode_tab2:
                         video_list.append(pkg["video"])
                         titles.append(pkg["title"])
 
-                    # FFmpeg 컷편집 & Concat 결합
                     stitched_bytes = stitch_mashup_videos(
                         video_list, clip_sec=clip_duration, hflip=True, speed=1.1
                     )
@@ -674,7 +644,6 @@ with mode_tab2:
                 use_container_width=True,
             )
 
-        # 짜깁기 전용 통합 대본
         st.markdown("---")
         st.markdown("#### ✍️ 교차 컷편집 맞춤 판매 대본")
         m_scripts = generate_rich_selling_scripts(
