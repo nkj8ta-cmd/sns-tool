@@ -267,6 +267,90 @@ def extract_mp3_audio(video_bytes):
 # ==========================================
 # YouTube: 실제 파일 준비 (다이얼로그 안에서 실행)
 # ==========================================
+def probe_video(data):
+    """ffprobe로 코덱/해상도(회전 반영)/길이를 읽습니다."""
+    info = {"codec": None, "pix_fmt": None, "w": None, "h": None, "duration": None}
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+        f.write(data)
+        path = f.name
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name,pix_fmt,width,height:stream_tags=rotate:stream_side_data=rotation:format=duration",
+             "-of", "json", path],
+            capture_output=True, text=True,
+        )
+        j = json.loads(r.stdout or "{}")
+        s = (j.get("streams") or [{}])[0]
+        w, h = s.get("width"), s.get("height")
+        rot = 0
+        for sd in s.get("side_data_list", []) or []:
+            if "rotation" in sd:
+                rot = int(float(sd["rotation"]))
+        if s.get("tags", {}).get("rotate"):
+            rot = int(float(s["tags"]["rotate"]))
+        if w and h and abs(rot) % 180 == 90:
+            w, h = h, w
+        info.update({"codec": s.get("codec_name"), "pix_fmt": s.get("pix_fmt"), "w": w, "h": h})
+        try:
+            info["duration"] = float(j.get("format", {}).get("duration"))
+        except (TypeError, ValueError):
+            pass
+    except Exception:
+        pass
+    finally:
+        os.remove(path)
+    return info
+
+
+def make_preview(video_bytes):
+    """브라우저에서 확실히 재생되는 미리보기용 (bytes, w, h)를 만듭니다.
+    H.264/yuv420p면 원본 그대로, 아니면(HEVC/VP9/AV1 등) 미리보기용으로만 변환합니다.
+    다운로드 파일은 항상 원본 화질 그대로입니다."""
+    info = probe_video(video_bytes)
+    if info["codec"] == "h264" and info["pix_fmt"] == "yuv420p":
+        return video_bytes, info["w"], info["h"]
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+        f.write(video_bytes)
+        in_path = f.name
+    out_path = in_path.replace(".mp4", "_preview.mp4")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", in_path, "-t", "180",
+             "-vf", "scale='min(720,iw)':-2",
+             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            with open(out_path, "rb") as f:
+                pv = f.read()
+            pinfo = probe_video(pv)
+            return pv, pinfo["w"] or info["w"], pinfo["h"] or info["h"]
+    finally:
+        for p in (in_path, out_path):
+            if os.path.exists(p):
+                os.remove(p)
+    return video_bytes, info["w"], info["h"]
+
+
+def show_video(video_bytes, w=None, h=None):
+    """원본 화면비 그대로 표시 (세로 영상은 가운데 정렬, 가로 영상은 전체 폭)."""
+    if w and h:
+        ratio = w / h
+        if ratio < 0.9:        # 세로 (쇼츠/릴스/스레드)
+            _, mid, _ = st.columns([1, 1.3, 1])
+        elif ratio < 1.1:      # 정사각형
+            _, mid, _ = st.columns([1, 2, 1])
+        else:                  # 가로
+            mid = st.container()
+        with mid:
+            st.video(video_bytes)
+    else:
+        st.video(video_bytes)
+
+
 MIME = {
     "mp4": "video/mp4", "mkv": "video/x-matroska", "webm": "video/webm",
     "m4a": "audio/mp4", "mp3": "audio/mpeg", "opus": "audio/ogg", "srt": "text/plain", "vtt": "text/vtt",
@@ -369,7 +453,10 @@ def download_dialog(job):
 
     res = cache[key]
     if res["kind"] == "video":
-        st.video(res["bytes"])
+        if "preview" not in res:
+            with st.spinner("미리보기를 준비하는 중..."):
+                res["preview"] = make_preview(res["bytes"])
+        show_video(*res["preview"])
     elif res["kind"] == "audio":
         st.audio(res["bytes"])
     else:
@@ -542,7 +629,10 @@ with st.expander("⚙️ 영상 편집 옵션", expanded=False):
     with col_opt1:
         opt_flip = st.checkbox("🔄 좌우 대칭 변경 (반전)", value=False)
     with col_opt2:
-        opt_speed = st.selectbox("⏩ 배속 선택", [1.0, 1.05, 1.1, 1.15, 1.2], index=2)
+        SPEED_MIN, SPEED_MAX, SPEED_STEP = 1.0, 2.0, 0.5   # ← 간격을 0.05로 바꾸면 1.0, 1.05, 1.1 ...
+        speed_options = [round(SPEED_MIN + i * SPEED_STEP, 2)
+                         for i in range(int(round((SPEED_MAX - SPEED_MIN) / SPEED_STEP)) + 1)]
+        opt_speed = st.selectbox("⏩ 배속 선택", speed_options, index=0)
 
 
 # ==========================================
@@ -574,8 +664,13 @@ if submit_btn:
                         raw = extract_generic(target_link)
                     p_bar.progress(75, text=f"✂️ 영상 편집 처리 중 (배속: {opt_speed}x)... 75%")
                     final_video = process_editing(raw["video"], opt_flip, opt_speed) if raw.get("video") else None
+                    preview = None
+                    if final_video:
+                        p_bar.progress(90, text="🎞 미리보기 생성 중... 90%")
+                        preview = make_preview(final_video)
                     p_bar.empty()
                     st.session_state["processed_result"] = {
+                        "preview": preview,
                         "video": final_video, "raw_video": raw.get("video"),
                         "images": raw.get("images", []), "title": raw.get("title", "SNS Media"),
                         "desc": raw.get("desc", ""), "thumb": raw.get("thumb"), "speed_used": opt_speed,
@@ -678,7 +773,10 @@ if st.session_state.get("processed_result"):
     st.markdown("#### 🎬 파일 미리보기 및 다운로드")
 
     if vid:
-        st.video(vid)
+        if data.get("preview"):
+            show_video(*data["preview"])
+        else:
+            st.video(vid)
         clean_name = safe_name(title)
         st.markdown(f"**{clean_name}.mp4**")
         st.markdown('<div class="status-bar">다운로드가 완료되었습니다.</div>', unsafe_allow_html=True)
