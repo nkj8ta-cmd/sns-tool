@@ -37,7 +37,6 @@ def get_chinese_translation(text):
 def clean_social_url(url):
     clean = url.strip()
 
-    # 스레드 주소 정제
     if "threads.com" in clean or "threads.net" in clean:
         if "/share/" in clean:
             try:
@@ -52,7 +51,6 @@ def clean_social_url(url):
                 pass
         clean = clean.split("?")[0].replace("threads.com", "threads.net")
 
-    # 유튜브 주소 정제 (?si= 등 추적 파라미터 제거)
     elif "youtube.com" in clean or "youtu.be" in clean:
         clean = clean.split("&")[0]
         if "shorts/" in clean:
@@ -65,7 +63,7 @@ def clean_social_url(url):
 
 
 # ==========================================
-# 3. 스레드(Threads) 전용 크롤러 엔진
+# 3. 스레드 전용 크롤러
 # ==========================================
 def extract_threads_package(url):
     session = requests.Session()
@@ -99,7 +97,6 @@ def extract_threads_package(url):
         res = session.get(url, headers=mobile_headers, timeout=10)
         page_html = res.text
 
-    # 1) 본문 추출
     post_text = "추출된 본문이 없습니다."
     desc_match = re.search(
         r'<meta\s+(?:property|name)=["\'](?:og:description|twitter:description)["\']\s+content=["\'](.*?)["\']',
@@ -111,15 +108,7 @@ def extract_threads_package(url):
         sub_match = re.search(r':\s*["“](.*)["”]$', post_text, re.DOTALL)
         if sub_match:
             post_text = sub_match.group(1)
-    else:
-        title_match = re.search(
-            r'<meta\s+(?:property|name)=["\']og:title["\']\s+content=["\'](.*?)["\']',
-            page_html,
-        )
-        if title_match:
-            post_text = html.unescape(title_match.group(1))
 
-    # 2) 비디오 URL 추출
     video_urls = []
     og_videos = re.findall(
         r'<meta\s+(?:property|name)=["\']og:video(?::url)?["\']\s+content=["\'](.*?)["\']',
@@ -135,7 +124,6 @@ def extract_threads_package(url):
             v.replace(r"\/", "/").replace(r"\u0026", "&") for v in json_videos
         ])
 
-    # 3) 이미지 URL 추출
     image_urls = []
     og_images = re.findall(
         r'<meta\s+(?:property|name)=["\']og:image["\']\s+content=["\'](.*?)["\']',
@@ -180,7 +168,7 @@ def extract_threads_package(url):
 
 
 # ==========================================
-# 4. 범용 다운로드 엔진 (유튜브 403 완전 우회)
+# 4. 범용 다운로드 엔진 (유튜브 봇 우회 및 쿠키 자동 감지)
 # ==========================================
 def download_media_package(target_url):
     temp_dir = tempfile.mkdtemp()
@@ -192,16 +180,17 @@ def download_media_package(target_url):
         "no_warnings": True,
     }
 
-    # 유튜브: 403 차단을 우회하기 위해 iOS 단독 클라이언트 및 단일 일체형 포맷 사용
+    # 유튜브: tv/android_creator 프로토콜 및 cookies.txt 연동
     if "youtube.com" in target_url or "youtu.be" in target_url:
         ydl_opts["format"] = "best[ext=mp4]/best"
         ydl_opts["extractor_args"] = {
             "youtube": {
-                "player_client": ["ios"],
+                "player_client": ["tv", "android_creator", "mweb"],
             }
         }
+        if os.path.exists("cookies.txt"):
+            ydl_opts["cookiefile"] = "cookies.txt"
     else:
-        # 틱톡 및 기타 SNS: H.264 코덱 우선 수집 및 브라우저 헤더 전달
         ydl_opts["format"] = "bestvideo*+bestaudio/best"
         ydl_opts["format_sort"] = ["vcodec:h264", "acodec:m4a", "ext:mp4:m4a"]
         ydl_opts["merge_output_format"] = "mp4"
@@ -300,7 +289,6 @@ if analyze_btn:
 
                 st.success("✅ 확인 완료!")
 
-                # 1) 동영상 영역
                 if videos:
                     st.markdown(f"#### 🎬 동영상 ({len(videos)}개)")
                     for idx, v_bytes in enumerate(videos):
@@ -313,7 +301,6 @@ if analyze_btn:
                             key=f"v_{idx}",
                         )
 
-                # 2) 사진 영역
                 if images:
                     st.markdown(f"#### 🖼 사진 ({len(images)}개)")
                     cols = st.columns(min(len(images), 3))
@@ -328,11 +315,9 @@ if analyze_btn:
                                 key=f"i_{idx}",
                             )
 
-                # 3) 본문 영역
                 st.markdown("#### 📝 본문")
                 st.text_area("내용", post_text, height=130)
 
-                # 4) ZIP 일괄 다운로드
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(
                     zip_buffer, "w", zipfile.ZIP_DEFLATED
