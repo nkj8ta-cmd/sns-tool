@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from urllib.parse import quote
 import zipfile
 from deep_translator import GoogleTranslator, MyMemoryTranslator
@@ -14,49 +15,20 @@ import streamlit as st
 import yt_dlp
 
 st.set_page_config(
-    page_title="SnapWC - SNS 다운로더 & 바이럴 스튜디오",
+    page_title="SnapStudio - SNS 무워터마크 다운로더 & 바이럴 스튜디오",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# 상단 여백을 7rem으로 대폭 확보하여 메뉴 가림을 완전히 해결한 CSS
+# SnapWC 스타일 CSS 주입
 st.markdown(
     """
 <style>
-    /* 상단 헤더에 가려지지 않도록 여백을 대폭 확보 */
     .block-container {
-        padding-top: 7rem !important;
+        padding-top: 4.5rem !important;
         padding-bottom: 3.5rem !important;
-        max-width: 920px;
-    }
-    /* 플랫폼 선택 버튼 디자인 */
-    div[role="radiogroup"] {
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: center;
-        gap: 10px;
-        background: #f8fafc;
-        padding: 12px;
-        border-radius: 16px;
-        border: 1px solid #e2e8f0;
-        margin-bottom: 25px;
-    }
-    div[role="radiogroup"] label {
-        background: #ffffff;
-        border: 1px solid #cbd5e1;
-        padding: 8px 16px;
-        border-radius: 20px;
-        cursor: pointer;
-        font-size: 14px;
-        font-weight: 600;
-        margin: 0 !important;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        transition: all 0.2s ease;
-    }
-    div[role="radiogroup"] label:hover {
-        border-color: #2563eb;
-        color: #2563eb;
+        max-width: 960px;
     }
     .snap-hero-title {
         text-align: center;
@@ -72,7 +44,15 @@ st.markdown(
         text-align: center;
         font-size: 14.5px;
         color: #64748b;
-        margin-bottom: 22px;
+        margin-bottom: 20px;
+    }
+    .preview-box {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 20px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
     }
     .stat-badge {
         display: inline-block;
@@ -83,6 +63,13 @@ st.markdown(
         border-radius: 4px;
         margin-right: 4px;
         margin-top: 4px;
+    }
+    .mashup-clip {
+        background: #f8fafc;
+        border: 1px dashed #cbd5e1;
+        border-radius: 8px;
+        padding: 8px;
+        margin-top: 6px;
     }
 </style>
 
@@ -102,7 +89,7 @@ async function pasteFromClipboard() {
             }
         }
     } catch (e) {
-        alert("클립보드 권한을 허용해주세요. (Ctrl+V로 직접 붙여넣으셔도 됩니다)");
+        alert("클립보드 권한을 허용해 주세요.");
     }
 }
 </script>
@@ -111,20 +98,20 @@ async function pasteFromClipboard() {
 )
 
 # 세션 상태 초기화
-if "main_url_input" not in st.session_state:
-    st.session_state["main_url_input"] = ""
+if "main_text_field" not in st.session_state:
+    st.session_state["main_text_field"] = ""
 if "data" not in st.session_state:
     st.session_state["data"] = None
 if "remix_video" not in st.session_state:
     st.session_state["remix_video"] = None
 if "mp3_bytes" not in st.session_state:
     st.session_state["mp3_bytes"] = None
-if "trigger_analyze" not in st.session_state:
-    st.session_state["trigger_analyze"] = False
+if "auto_run" not in st.session_state:
+    st.session_state["auto_run"] = False
 
 
 # ==========================================
-# 1. 번역 캐싱 엔진
+# 1. 번역 및 URL 정제 엔진
 # ==========================================
 @st.cache_data(show_spinner=False)
 def get_chinese_translation(text):
@@ -137,19 +124,19 @@ def get_chinese_translation(text):
         )
 
 
-# ==========================================
-# 2. URL 전처리 엔진
-# ==========================================
 def clean_social_url(raw_input):
     url_match = re.search(r"https?://[^\s]+", raw_input)
     clean = url_match.group(0) if url_match else raw_input.strip()
 
-    if "xhslink.com" in clean or "/share/" in clean or "v.douyin.com" in clean:
+    if any(
+        k in clean
+        for k in ["xhslink.com", "vt.tiktok.com", "/share/", "/t/", "youtu.be"]
+    ):
         try:
             head_res = requests.head(
                 clean,
                 allow_redirects=True,
-                timeout=6,
+                timeout=7,
                 headers={"User-Agent": "Mozilla/5.0"},
             )
             clean = head_res.url
@@ -162,7 +149,7 @@ def clean_social_url(raw_input):
 
     if "threads.com" in clean or "threads.net" in clean:
         clean = clean.split("?")[0].replace("threads.com", "threads.net")
-    elif "youtube.com" in clean or "youtu.be" in clean:
+    elif "youtube.com" in clean:
         clean = clean.split("&")[0]
         if "shorts/" in clean:
             clean = clean.split("?")[0]
@@ -171,7 +158,7 @@ def clean_social_url(raw_input):
 
 
 # ==========================================
-# 3. 샤오홍슈 & 스레드 전용 메타 파서
+# 2. 메타 크롤러 & 범용 yt-dlp 엔진
 # ==========================================
 def extract_direct_meta(url):
     session = requests.Session()
@@ -283,24 +270,33 @@ def extract_direct_meta(url):
     }
 
 
-# ==========================================
-# 4. 범용 다운로드 엔진 (yt-dlp)
-# ==========================================
-def download_media_package(target_url):
+def download_media_package(target_url, progress_bar=None):
     temp_dir = tempfile.mkdtemp()
     out_tmpl = os.path.join(temp_dir, "%(id)s.%(ext)s")
+
+    def progress_hook(d):
+        if d["status"] == "downloading" and progress_bar:
+            p_str = d.get("_percent_str", "0%").replace("%", "").strip()
+            try:
+                val = min(int(float(p_str)), 95)
+                progress_bar.progress(val, text=f"📥 다운로드 수신 중... {val}%")
+            except Exception:
+                pass
 
     ydl_opts = {
         "outtmpl": out_tmpl,
         "quiet": True,
         "no_warnings": True,
         "writethumbnail": True,
+        "progress_hooks": [progress_hook],
     }
 
     if "youtube.com" in target_url or "youtu.be" in target_url:
         ydl_opts["format"] = "best[ext=mp4]/best"
         ydl_opts["extractor_args"] = {
-            "youtube": {"player_client": ["tv", "android_creator", "mweb"]}
+            "youtube": {
+                "player_client": ["android", "ios", "tv_embedded"],
+            }
         }
         if os.path.exists("cookies.txt"):
             ydl_opts["cookiefile"] = "cookies.txt"
@@ -310,7 +306,8 @@ def download_media_package(target_url):
         ydl_opts["merge_output_format"] = "mp4"
         ydl_opts["http_headers"] = {
             "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+                " AppleWebKit/537.36"
             ),
             "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
         }
@@ -354,7 +351,7 @@ def download_media_package(target_url):
 
 
 # ==========================================
-# 5. FFmpeg 엔진
+# 3. FFmpeg 가공 엔진 (자막 블러 기능 추가)
 # ==========================================
 def extract_mp3_from_video(video_bytes):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as in_file:
@@ -383,19 +380,37 @@ def extract_mp3_from_video(video_bytes):
     return None
 
 
-def process_video_remix(video_bytes, hflip, speed, mute):
+def process_video_remix(video_bytes, hflip, speed, mute, blur_subtitles):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as in_file:
         in_file.write(video_bytes)
         in_path = in_file.name
 
     out_path = in_path.replace(".mp4", "_remix.mp4")
-    vf_list = []
+    filters = []
+
+    # 1) 좌우 반전
     if hflip:
-        vf_list.append("hflip")
+        filters.append("hflip")
+
+    # 2) 배속 조정
     if speed != 1.0:
         pts = 1.0 / speed
-        vf_list.append(f"setpts={pts}*PTS")
-    vf_cmd = ["-vf", ",".join(vf_list)] if vf_list else []
+        filters.append(f"setpts={pts}*PTS")
+
+    # 3) 하단 자막 블러 처리 (하단 20% 영역 흐림 처리)
+    if blur_subtitles:
+        # split 후 하단 20%를 crop -> boxblur -> 다시 overlay
+        sub_filter = (
+            "split[main][sub];"
+            "[sub]crop=iw:ih*0.22:0:ih*0.78,boxblur=15:5[blurred];"
+            "[main][blurred]overlay=0:H*0.78"
+        )
+        if filters:
+            vf_cmd = ["-filter_complex", f"{','.join(filters)},{sub_filter}"]
+        else:
+            vf_cmd = ["-filter_complex", sub_filter]
+    else:
+        vf_cmd = ["-vf", ",".join(filters)] if filters else []
 
     af_cmd = []
     if mute:
@@ -431,301 +446,346 @@ def process_video_remix(video_bytes, hflip, speed, mute):
 
 
 # ==========================================
-# 6. 실시간 바이럴 TOP 50 데이터 엔진 (검색 링크 최적화)
+# 4. AI 바이럴 후킹 & 대본 생성기 (틱톡/쇼츠/릴스/스레드)
+# ==========================================
+def generate_viral_hooks(title, platform):
+    title_clean = title.strip() or "이 제품"
+    hooks = [
+        f"🔥 '이거 모르면 평생 손해' 소리 나오는 {title_clean} 실물 체감",
+        f"👀 자취 5년차인데 왜 이걸 이제야 알았을까요? ({title_clean})",
+        f"🚨 틱톡에서 300만 뷰 터진 바로 그 영상 속 꿀템",
+    ]
+    script_outline = f"""[0~3초 시선 후킹]
+"아직도 고생하면서 쓰시나요? 이거 하나면 3초 만에 끝납니다."
+
+[3~15초 기능 시연 & 공감대 형성]
+- 실제 문제 상황(불편함, 찌든 때, 정리 안 됨)을 2초간 노출
+- {title_clean} 작동 모습 클로즈업
+
+[15~25초 반전 결과 & 사용 팁]
+- 사용 전/후 비교(Before & After)
+- 다른 멀티 앵글 클립과 교차 편집하여 지루함 제거
+
+[마무리 CTA]
+"더 자세한 정보와 구매처는 프로필 링크에서 확인하세요!"""
+
+    return hooks, script_outline
+
+
+# ==========================================
+# 5. 동일 제품 3~4개 교차 짜깁기 클러스터 DB
 # ==========================================
 @st.cache_data(ttl=3600)
-def get_viral_top50(platform):
-    categories = [
-        "생활/청소/정리",
-        "주방/요리/푸드",
-        "1인가구/자취템",
-        "뷰티/패션/다이어트",
-        "아이디어/테크/꿀팁",
+def get_mashup_product_clusters():
+    # 동일 제품에 대해 3~4개의 서로 다른 각도/내용의 클립 세트 제공
+    return [
+        {
+            "product": "전동 틈새 회전 청소솔",
+            "category": "생활/청소",
+            "clean_subtitle": True,
+            "clips": [
+                {
+                    "title": "클립 A: 패키지 언박싱 & 헤드 교체",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("电动缝隙刷 开箱")
+                    ),
+                    "likes": "18.4만",
+                },
+                {
+                    "title": "클립 B: 욕실 타일 찌든때 고속 회전 시연",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("电动缝隙刷 清洁实测")
+                    ),
+                    "likes": "22.1만",
+                },
+                {
+                    "title": "클립 C: 창문 틈새 먼지 세척 비포애프터",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("电动缝隙刷 窗户缝隙")
+                    ),
+                    "likes": "14.2만",
+                },
+                {
+                    "title": "클립 D: 방수 테스트 & 간편 보관 거치",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("电动缝隙刷 防水收纳")
+                    ),
+                    "likes": "9.8만",
+                },
+            ],
+        },
+        {
+            "product": "정량 토출 원터치 양념통",
+            "category": "주방/요리",
+            "clean_subtitle": True,
+            "clips": [
+                {
+                    "title": "클립 A: 소금/설탕 0.5g 정량 토출 클로즈업",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("定量调料罐 控盐")
+                    ),
+                    "likes": "24.5만",
+                },
+                {
+                    "title": "클립 B: 밀폐 실리콘 방습 뚜껑 분해",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("定量调料瓶 防潮密封")
+                    ),
+                    "likes": "16.8만",
+                },
+                {
+                    "title": "클립 C: 실제 요리 중 한 손 조작 쾌감",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("按压出盐 厨房神器")
+                    ),
+                    "likes": "19.3만",
+                },
+            ],
+        },
+        {
+            "product": "자취방 접이식 빨래바구니",
+            "category": "1인가구/자취",
+            "clean_subtitle": True,
+            "clips": [
+                {
+                    "title": "클립 A: 벽면 틈새 3cm 납작 접기 시연",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("折叠脏衣篮 夹缝收纳")
+                    ),
+                    "likes": "31.2만",
+                },
+                {
+                    "title": "클립 B: 대용량 세탁물 투입 내구성 테스트",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("壁挂脏衣篓 大容量")
+                    ),
+                    "likes": "15.0만",
+                },
+                {
+                    "title": "클립 C: 손잡이 이동 및 세탁기 앞 거치",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("手提洗衣篮 独居好物")
+                    ),
+                    "likes": "12.7만",
+                },
+            ],
+        },
+        {
+            "product": "초강력 무선 터보 에어건",
+            "category": "아이디어/테크",
+            "clean_subtitle": False,
+            "clips": [
+                {
+                    "title": "클립 A: 키보드 속 과자부스러기 날리기",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("暴力风扇 键盘除尘")
+                    ),
+                    "likes": "45.0만",
+                },
+                {
+                    "title": "클립 B: 세차 후 차량 물기 초고속 건조",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("涡轮风扇 汽车吹水")
+                    ),
+                    "likes": "38.6만",
+                },
+                {
+                    "title": "클립 C: 캠핑 불피우기 송풍 시연",
+                    "url": (
+                        "https://www.rednote.com/search_result?keyword="
+                        + quote("户外生火 暴力风扇")
+                    ),
+                    "likes": "21.4만",
+                },
+            ],
+        },
     ]
-
-    xhs_items = [
-        ("전동 틈새 청소 브러쉬 (원터치 회전)", "电动缝隙刷 清洁", 18.4, 3200, 142, 8500),
-        ("먼지 안 날리는 틈새 정전기 포", "静电除尘纸 缝隙", 14.1, 2100, 98, 6200),
-        ("실리콘 계란 프라이 4구 팬", "四孔煎蛋锅 早餐神器", 26.5, 4800, 210, 12000),
-        ("원터치 양념통 세트 (정량 토출)", "定量调料罐 厨房", 21.3, 3100, 175, 9400),
-        ("자취생 접이식 빨래 바구니", "折叠脏衣篮 独居", 19.8, 2900, 130, 8100),
-        ("문걸이형 다용도 분리수거함", "挂式垃圾桶 厨房", 16.2, 1950, 112, 7300),
-        ("매직 흡착 나노 테이프 거치대", "纳米双面胶 收纳神器", 31.0, 5400, 260, 15000),
-        ("초음파 안경 & 귀금속 세척기", "超声波清洗机", 15.7, 2400, 120, 6800),
-        ("실리콘 배수구 냄새 차단 트랩", "地漏防臭防虫防堵塞", 22.4, 3800, 190, 10500),
-        ("벽걸이 자동 센서 휴지통", "智能感应垃圾桶 卫生间", 28.1, 4900, 230, 13200),
-    ]
-
-    douyin_items = [
-        ("3초 만에 찌든 때 녹이는 탄산 버블 세제", "去油污清洁剂 厨房神器", 45.2, 8200, 480, 25000),
-        ("자석 회전 차량용 무선충전 거치대", "车载手机支架 磁吸", 38.6, 6100, 390, 19000),
-        ("초소형 무선 에어건 먼지제거기", "强力涡轮暴力风扇 除尘", 52.1, 9400, 560, 31000),
-        ("원터치 자동 진공 밀폐용기", "抽真空保鲜盒", 33.4, 5200, 310, 16000),
-        ("스테인리스 다기능 만능 가위", "多功能不锈钢剪刀", 29.8, 4700, 270, 14000),
-        ("스마트 센서 모션인식 침대 무드등", "人体感应小夜灯", 41.5, 7300, 420, 22000),
-        ("접이식 휴대용 텀블러 세척솔", "杯刷 清洁无死角", 24.1, 3600, 180, 11000),
-        ("다용도 싱크대 물막이 & 선반", "水槽挡水板 沥水架", 27.9, 4100, 230, 13500),
-        ("실리콘 얼음틀 원터치 분리기", "按压式制冰盒", 48.0, 8900, 510, 28000),
-        ("틈새 수납 슬림 트롤리 3단", "夹缝收纳小推车", 35.7, 5800, 340, 17500),
-    ]
-
-    threads_items = [
-        ("자취 5년차가 추천하는 쿠팡 삶의 질 상승템 7가지", "자취 꿀템 추천", 12.8, 1450, 85, 3800),
-        ("청소 스트레스 90% 줄여준 알리익스프레스 꿀템", "청소 꿀템 추천", 9.4, 980, 62, 2900),
-        ("외국 틱톡에서 1000만뷰 터진 주방 아이디어 용품", "주방 아이디어 상품", 15.3, 1800, 110, 4500),
-        ("방 분위기 180도 바꿔주는 가성비 조명 추천", "인테리어 조명 꿀템", 8.7, 850, 54, 2400),
-        ("샤오홍슈에서 난리 난 다이어트 초간단 레시피", "샤오홍슈 다이어트 식단", 21.0, 2600, 160, 6800),
-        ("다이소 직원도 품절될까봐 숨겨두는 꿀템 모음", "다이소 품절대란 꿀템", 18.2, 2100, 135, 5900),
-        ("옷장 수납공간 2배 늘려주는 매직 옷걸이", "옷장 수납 정리 옷걸이", 11.5, 1200, 78, 3400),
-        ("에어프라이어 200% 활용하는 필수 실리콘 바스켓", "에어프라이어 실리콘 용기", 14.0, 1650, 95, 4200),
-        ("욕실 곰팡이 1도 안 생기게 만드는 꿀팁템", "욕실 곰팡이 방지 꿀팁", 16.8, 1950, 125, 5300),
-        ("재택근무 생산성 미치게 올려준 데스크 셋업 아이템", "데스크테리어 꿀템", 10.2, 1100, 70, 3100),
-    ]
-
-    base_list = (
-        xhs_items
-        if "샤오홍슈" in platform
-        else (douyin_items if "도우인" in platform else threads_items)
-    )
-
-    full_50 = []
-    for i in range(50):
-        template = base_list[i % len(base_list)]
-        cat = categories[i % len(categories)]
-        multiplier = round(1.0 - (i * 0.015), 2)
-        kw = template[1]
-
-        # 로그인 팝업을 피하기 위해 바로 검색 결과 페이지로 링크 생성
-        if "샤오홍슈" in platform:
-            view_url = f"https://www.xiaohongshu.com/search_result?keyword={quote(kw)}"
-        elif "도우인" in platform:
-            view_url = f"https://www.douyin.com/search/{quote(kw)}"
-        else:
-            view_url = f"https://www.threads.net/search?q={quote(kw)}"
-
-        full_50.append({
-            "rank": i + 1,
-            "title": f"#{i + 1} {template[0]}",
-            "category": cat,
-            "url": view_url,
-            "likes": round(template[2] * multiplier, 1),
-            "comments": int(template[3] * multiplier),
-            "views": int(template[4] * multiplier),
-            "shares": int(template[5] * multiplier),
-        })
-    return full_50
 
 
 # ==========================================
-# UI 1. 왼쪽 사이드바: 바이럴 랭킹 50
+# UI 1. 왼쪽 사이드바: 무자막 우선 & 동일 제품 3~4개 교차 클러스터
 # ==========================================
 with st.sidebar:
-    st.markdown("### 🔥 실시간 바이럴 TOP 50")
-    st.caption("터진 인기 소재를 확인하고 [작업하기]로 바로 가져오세요.")
-
-    rank_platform = st.radio(
-        "플랫폼 선택",
-        ["📕 샤오홍슈 50위", "🎵 도우인 50위", "🧵 스레드 50위"],
-        index=0,
+    st.markdown("### 🧩 동일 제품 3~4개 교차 짜깁기 클러스터")
+    st.caption(
+        "영상 1개로 세탁하면 저작권/중복에 걸립니다. 동일 제품의 다른 각도 영상을 3~4개 받아 컷편집(매시업)하세요!"
     )
 
-    rank_category = st.selectbox(
-        "카테고리 필터",
-        [
-            "전체 보기",
-            "생활/청소/정리",
-            "주방/요리/푸드",
-            "1인가구/자취템",
-            "뷰티/패션/다이어트",
-            "아이디어/테크/꿀팁",
-        ],
-    )
+    filter_no_sub = st.toggle("✨ 자막 없는(클린) 영상 우선 모드", value=True)
+    clusters = get_mashup_product_clusters()
 
-    rank_sort = st.selectbox(
-        "정렬 기준",
-        ["좋아요 많은 순", "조회수 많은 순", "댓글 많은 순", "공유/추천 많은 순"],
-    )
+    for idx, c_item in enumerate(clusters):
+        if filter_no_sub and not c_item["clean_subtitle"]:
+            continue
 
-    raw_ranks = get_viral_top50(rank_platform)
-    filtered_ranks = [
-        item
-        for item in raw_ranks
-        if rank_category == "전체 보기" or item["category"] == rank_category
-    ]
-
-    if rank_sort == "좋아요 많은 순":
-        filtered_ranks.sort(key=lambda x: x["likes"], reverse=True)
-    elif rank_sort == "조회수 많은 순":
-        filtered_ranks.sort(key=lambda x: x["views"], reverse=True)
-    elif rank_sort == "댓글 많은 순":
-        filtered_ranks.sort(key=lambda x: x["comments"], reverse=True)
-    elif rank_sort == "공유/추천 많은 순":
-        filtered_ranks.sort(key=lambda x: x["shares"], reverse=True)
-
-    st.markdown(f"**총 {len(filtered_ranks)}개 인기 콘텐츠**")
-    st.markdown("---")
-
-    for item in filtered_ranks:
-        r_num = item["rank"]
-        badge = (
-            "🥇"
-            if r_num == 1
-            else ("🥈" if r_num == 2 else ("🥉" if r_num == 3 else f"#{r_num}"))
-        )
-
-        with st.container():
-            st.markdown(f"**{badge} {item['title']}**")
+        with st.expander(
+            f"📦 #{idx+1} {c_item['product']} ({len(c_item['clips'])}개 클립)",
+            expanded=(idx == 0),
+        ):
             st.markdown(
-                f"<span class='stat-badge'>🏷️ {item['category']}</span>"
-                f"<span class='stat-badge'>❤️ {item['likes']}만</span>"
-                f"<span class='stat-badge'>💬 {item['comments']:,}</span>"
-                f"<span class='stat-badge'>👀 {item['views']}만회</span>"
-                f"<span class='stat-badge'>🔄 {item['shares']:,}회</span>",
+                f"<span class='stat-badge'>카테고리: {c_item['category']}</span>"
+                + (
+                    "<span class='stat-badge' style='color:#16a34a;'>무자막"
+                    " 클린</span>"
+                    if c_item["clean_subtitle"]
+                    else ""
+                ),
                 unsafe_allow_html=True,
             )
 
-            col_b1, col_b2 = st.columns([1.8, 1])
-            with col_b1:
-                if st.button(
-                    "⚡ 이 영상 작업하기",
-                    key=f"rank_pick_{rank_platform}_{item['rank']}",
-                    use_container_width=True,
-                ):
-                    st.session_state["main_url_input"] = item["url"]
-                    st.session_state["trigger_analyze"] = True
-                    st.rerun()
-            with col_b2:
-                st.link_button(
-                    "🔗 보기", item["url"], use_container_width=True
+            for clip in c_item["clips"]:
+                st.markdown(
+                    f"<div class='mashup-clip'>"
+                    f"<b>{clip['title']}</b> (❤️ {clip['likes']})"
+                    f"</div>",
+                    unsafe_allow_html=True,
                 )
-            st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
+                col_c1, col_c2 = st.columns([1.6, 1])
+                with col_c1:
+                    if st.button(
+                        "⚡ 이 클립 받기",
+                        key=f"clip_load_{clip['title']}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["main_text_field"] = clip["url"]
+                        st.session_state["auto_run"] = True
+                        st.rerun()
+                with col_c2:
+                    st.link_button("🔗 원본", clip["url"], use_container_width=True)
 
 
 # ==========================================
-# UI 2. 메인 화면: 플랫폼 선택 메뉴 바 (완전 노출)
+# UI 2. 상단 3대 핵심 제어 바 (가로 탭 배치)
 # ==========================================
-platform_list = [
-    "📕 샤오홍슈",
-    "⚫ TikTok",
-    "🔴 YouTube",
-    "📸 Instagram",
-    "🧵 Threads",
-    "🌐 기타 SNS",
-]
-
-selected_platform = st.radio(
-    "플랫폼 선택",
-    options=platform_list,
-    index=0,
-    horizontal=True,
-    label_visibility="collapsed",
-)
-
-title_map = {
-    "📕 샤오홍슈": (
-        "샤오홍슈 워터마크 없는 다운로드",
-        "샤오홍슈(RedNote) 영상, 사진, 노트를 HD로 무료 저장",
-    ),
-    "⚫ TikTok": (
-        "틱톡 워터마크 없는 다운로드",
-        "TikTok 고화질 동영상 무워터마크 MP4 다운로드",
-    ),
-    "🔴 YouTube": (
-        "유튜브 동영상 & 쇼츠 다운로드",
-        "YouTube Shorts 및 일반 영상을 고화질로 저장",
-    ),
-    "📸 Instagram": (
-        "인스타그램 릴스 & 사진 다운로드",
-        "Instagram 릴스, 비디오, 피드 사진 원본 저장",
-    ),
-    "🧵 Threads": (
-        "스레드 영상 & 사진 다운로드",
-        "Threads 본문 텍스트, 동영상 및 이미지 패키지 다운로드",
-    ),
-    "🌐 기타 SNS": (
-        "SNS 미디어 올인원 다운로드",
-        "X(트위터), 페이스북, 도우인 등 전 세계 주요 사이트를 지원합니다",
-    ),
-}
-
-main_title, sub_title = title_map[selected_platform]
-
 st.markdown(
-    f'<div class="snap-hero-title">{main_title}</div>', unsafe_allow_html=True
+    '<div class="snap-hero-title">SnapStudio 미디어 리사이클링 허브</div>',
+    unsafe_allow_html=True,
 )
 st.markdown(
-    f'<div class="snap-hero-sub">{sub_title}</div>', unsafe_allow_html=True
+    '<div class="snap-hero-sub">무워터마크 추출 · 원클릭 자막블러 세탁 · AI 대본'
+    " 생성 · 교차 짜깁기</div>",
+    unsafe_allow_html=True,
 )
 
+tab_preset, tab_hook, tab_tags = st.tabs([
+    "⚡ 1. 원클릭 자동 세탁 프리셋 바",
+    "✍️ 2. AI 바이럴 후킹 & 대본 (틱톡/쇼츠/릴스/스레드)",
+    "🏷️ 3. 오늘의 핫 소싱 키워드 칩",
+])
 
-# ==========================================
-# UI 3. 한글 ➔ 중국어 키워드 검색기
-# ==========================================
-with st.expander(
-    "🔍 한글 ➔ 샤오홍슈 바이럴 키워드 검색기 (치트키 자동 조합)",
-    expanded=(selected_platform == "📕 샤오홍슈"),
-):
-    st.caption(
-        "한글 제품명을 입력하면 중국 현지 바이럴 검색어로 즉시 조합되어 샤오홍슈 검색창으로 연결됩니다."
-    )
-    with st.form("trans_form"):
-        k_col1, k_col2 = st.columns([3.5, 1.2])
-        with k_col1:
-            kor_keyword = st.text_input(
-                "제품명 입력",
-                placeholder="예: 전동 틈새 청소솔, 자취방 조명, 빨래 바구니",
-                label_visibility="collapsed",
-            )
-        with k_col2:
-            trans_submit = st.form_submit_button(
-                "🇨🇳 치트키 생성", use_container_width=True
-            )
+# [탭 1] 원클릭 자동 세탁 프리셋
+with tab_preset:
+    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+    with col_p1:
+        preset_hflip = st.checkbox(
+            "🔄 좌우 반전",
+            value=True,
+            help="화면 축을 반전시켜 중복 인식을 우회합니다.",
+        )
+    with col_p2:
+        preset_speed = st.selectbox(
+            "⏩ 미세 배속",
+            [1.0, 1.05, 1.1, 1.15, 1.2],
+            index=2,
+            help="1.1배속은 시청 지속 시간을 끌어올립니다.",
+        )
+    with col_p3:
+        preset_blur = st.checkbox(
+            "🔲 하단 자막 블러",
+            value=True,
+            help="중국어 하드코딩 자막 위치를 자연스럽게 블러 처리합니다.",
+        )
+    with col_p4:
+        preset_mute = st.checkbox(
+            "🔇 원본 오디오 음소거",
+            value=False,
+            help="음소거 후 새 음원/나레이션을 입힐 때 유용합니다.",
+        )
 
-    if trans_submit and kor_keyword.strip():
-        try:
-            with st.spinner("중국어 번역 및 치트키 조합 중..."):
-                translated = get_chinese_translation(kor_keyword)
-                presets = [
-                    ("🎬 시각적 ASMR / 쾌감", f"{translated} 解压 沉浸式"),
-                    ("✨ 삶의 질 상승템 / 치트키", f"{translated} 神器 提升幸福感"),
-                    ("🏠 1인 가구 / 자취방 꿀템", f"{translated} 独居好物 出租屋"),
-                    ("🧹 청소·정리 강박 / 귀차니즘", f"{translated} 懒人 强迫症"),
-                ]
-                st.success(f"기본 번역 단어: **{translated}**")
-                for label, combo in presets:
-                    c1, c2 = st.columns([3, 1])
-                    c1.code(combo, language="text")
-                    search_url = f"https://www.xiaohongshu.com/search_result?keyword={quote(combo)}"
-                    c2.link_button(
-                        "🔍 검색 열기", search_url, use_container_width=True
-                    )
-        except Exception as err:
-            st.error(f"번역 오류: {err}")
+# [탭 2] AI 바이럴 후킹 & 대본 생성기
+with tab_hook:
+    c_hook_plat, c_hook_title = st.columns([1.5, 3.5])
+    with c_hook_plat:
+        target_platform = st.selectbox(
+            "타겟 플랫폼",
+            ["⚫ 틱톡 (TikTok)", "🔴 유튜브 쇼츠", "📸 인스타 릴스", "🧵 스레드 (Threads)"],
+        )
+    with c_hook_title:
+        sample_title = st.text_input(
+            "소재 키워드",
+            value="전동 틈새 청소솔",
+            placeholder="영상 주제나 제품명을 적으세요",
+        )
+
+    hooks, script = generate_viral_hooks(sample_title, target_platform)
+    st.markdown("**🎯 추천 3초 후킹 카피 (복사해서 썸네일/첫 대사로 활용):**")
+    for h in hooks:
+        st.code(h, language="text")
+
+    with st.expander("📄 숏폼 30초 교차 편집 대본 가이드 보기"):
+        st.text_area("대본 구조", script, height=180)
+
+# [탭 3] 오늘의 핫 소싱 키워드 칩
+with tab_tags:
+    st.caption("클릭하면 아래 주소창에 중국어 검색어가 자동으로 채워집니다.")
+    tag_cols = st.columns(5)
+    tags = [
+        ("🧹 청소 쾌감", "解压 清洁神器"),
+        ("✨ 삶의 질 상승", "提升幸福感 好物"),
+        ("🍳 주방 치트키", "厨房 懒人神器"),
+        ("🏠 자취방 꿀템", "独居 出租屋好物"),
+        ("📦 알리/테무 신박템", "黑科技 实用工具"),
+    ]
+    for i, (t_name, t_kw) in enumerate(tags):
+        with tag_cols[i]:
+            if st.button(t_name, use_container_width=True):
+                st.session_state["main_text_field"] = (
+                    f"https://www.rednote.com/search_result?keyword={quote(t_kw)}"
+                )
+                st.rerun()
 
 st.write("")
 
 
 # ==========================================
-# UI 4. 주소창 (지우기 ✖ & 붙여넣기 📋)
+# UI 3. 주소창 (지우기 ✖ & 붙여넣기 📋)
 # ==========================================
+def clear_url_callback():
+    st.session_state["main_text_field"] = ""
+    st.session_state["data"] = None
+    st.session_state["remix_video"] = None
+    st.session_state["mp3_bytes"] = None
+
+
 c_input, c_clear, c_paste, c_btn = st.columns([3.8, 0.45, 0.45, 1.3])
 
 with c_input:
-    current_input_val = st.text_input(
+    url_input_val = st.text_input(
         "입력창",
-        value=st.session_state["main_url_input"],
+        key="main_text_field",
         placeholder="영상 링크 또는 공유한 텍스트를 여기에 붙여넣어 주세요",
         label_visibility="collapsed",
-        key="main_text_field",
     )
 
 with c_clear:
-    if st.button("✖", help="입력한 주소 지우기", use_container_width=True):
-        st.session_state["main_url_input"] = ""
-        st.session_state["data"] = None
-        st.session_state["remix_video"] = None
-        st.session_state["mp3_bytes"] = None
-        st.rerun()
+    st.button(
+        "✖",
+        on_click=clear_url_callback,
+        help="주소 지우기",
+        use_container_width=True,
+    )
 
 with c_paste:
     st.button(
@@ -737,8 +797,8 @@ with c_paste:
     st.markdown(
         """
         <script>
-        const pasteButtons = window.parent.document.querySelectorAll('button');
-        for (let b of pasteButtons) {
+        const pasteBtns = window.parent.document.querySelectorAll('button');
+        for (let b of pasteBtns) {
             if (b.innerText.includes('📋') && !b.dataset.pbound) {
                 b.dataset.pbound = "true";
                 b.addEventListener('click', pasteFromClipboard);
@@ -756,163 +816,195 @@ with c_btn:
 
 st.markdown(
     '<div style="text-align: center; font-size: 12.5px; color: #94a3b8;'
-    ' margin-top: 8px; margin-bottom: 25px;">YouTube, TikTok, X (Twitter),'
-    " Instagram, Facebook, Threads, 샤오홍슈(RedNote) 등 지원</div>",
+    ' margin-top: 8px; margin-bottom: 25px;">YouTube Shorts, TikTok,'
+    " Instagram, Threads, RedNote(샤오홍슈) 완벽 지원</div>",
     unsafe_allow_html=True,
 )
 
-# 사이드바에서 [이 영상 작업하기]가 눌렸거나 직접 다운로드를 누른 경우 실행
-auto_run = st.session_state["trigger_analyze"]
-st.session_state["trigger_analyze"] = False
 
-if analyze_btn:
-    st.session_state["main_url_input"] = current_input_val
+# 다운로드 트리거 및 프로그레스 바 실행
+is_triggered = analyze_btn or st.session_state["auto_run"]
+st.session_state["auto_run"] = False
 
-if (analyze_btn or auto_run) and st.session_state["main_url_input"].strip():
-    with st.spinner("미디어 분석 및 무워터마크 분리 추출 중..."):
+if is_triggered:
+    current_target = st.session_state["main_text_field"].strip()
+    if not current_target:
+        st.warning("링크 또는 공유 텍스트를 입력해 주세요.")
+    else:
+        # SnapWC 스타일 진행률 게이지 바
+        progress_bar = st.progress(5, text="⌛ 처리 중... 5%")
         try:
-            target_url = clean_social_url(st.session_state["main_url_input"])
+            time.sleep(0.2)
+            progress_bar.progress(25, text="🔍 소셜 링크 분석 및 모바일 리다이렉트 추적... 25%")
+            final_url = clean_social_url(current_target)
 
+            progress_bar.progress(50, text="⚡ 미디어 패키지 스트림 및 무워터마크 데이터 추출... 50%")
             if any(
-                k in target_url for k in ["rednote", "xiaohongshu", "threads"]
+                k in final_url for k in ["rednote", "xiaohongshu", "threads"]
             ):
                 try:
-                    data = extract_direct_meta(target_url)
-                    if not data["videos"] and not data["images"]:
-                        data = download_media_package(target_url)
+                    res_data = extract_direct_meta(final_url)
+                    if not res_data["videos"] and not res_data["images"]:
+                        res_data = download_media_package(
+                            final_url, progress_bar
+                        )
                 except Exception:
-                    data = download_media_package(target_url)
+                    res_data = download_media_package(final_url, progress_bar)
             else:
-                data = download_media_package(target_url)
+                res_data = download_media_package(final_url, progress_bar)
 
-            st.session_state["data"] = data
-            st.session_state["remix_video"] = None
+            # 상단 프리셋 자동 세탁이 켜져 있는 경우 FFmpeg 즉시 자동 렌더링
+            if res_data.get("videos"):
+                progress_bar.progress(
+                    80, text="✂️ 원클릭 프리셋 자동 세탁 렌더링 중 (반전/배속/자막블러)... 80%"
+                )
+                remix_result = process_video_remix(
+                    res_data["videos"][0],
+                    preset_hflip,
+                    preset_speed,
+                    preset_mute,
+                    preset_blur,
+                )
+                st.session_state["remix_video"] = remix_result
+
+            progress_bar.progress(100, text="✅ 완료! 다운로드 링크가 준비되었습니다.")
+            time.sleep(0.4)
+            progress_bar.empty()
+
+            st.session_state["data"] = res_data
             st.session_state["mp3_bytes"] = None
-        except Exception as e:
-            st.error(f"분석 실패: {e}")
+
+        except Exception as err:
+            progress_bar.empty()
+            st.error(f"다운로드 실패: {err}")
 
 
 # ==========================================
-# UI 5. 결과 화면 & 즉석 편집실
+# UI 4. 파일 미리보기 및 해상도별 다운로드 리스트 (스크린샷 15, 16 1:1 구현)
 # ==========================================
-if "data" in st.session_state and st.session_state["data"]:
+if st.session_state.get("data"):
     data = st.session_state["data"]
     videos = data["videos"]
     images = data["images"]
     title = data["title"]
     description = data["description"]
     thumb = data.get("thumbnail")
+    remix_v = st.session_state.get("remix_video")
 
     st.markdown("---")
-    st.markdown(
-        '<div style="font-size: 20px; font-weight: 700; color: #1e293b;'
-        ' margin-bottom: 3px;">다운로드 링크가 준비되었습니다</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<div style="font-size: 13.5px; color: #64748b; margin-bottom:'
-        ' 16px;">원하는 형식과 품질을 선택하세요</div>',
-        unsafe_allow_html=True,
-    )
 
-    # 1. 상단 프리뷰 카드
+    # 스크린샷 15 스타일: 파일 미리보기 전용 카드
+    st.markdown(f"#### 🎬 파일 미리보기 및 다운로드: `{title[:40]}...`")
+
     with st.container():
-        c_thumb, c_text = st.columns([1.3, 2.7])
-        with c_thumb:
-            if thumb:
-                st.image(thumb, use_container_width=True)
-                st.download_button(
-                    "🖼 커버 이미지 다운로드",
-                    thumb,
-                    "cover_thumbnail.jpg",
-                    "image/jpeg",
-                    use_container_width=True,
+        c_prev_vid, c_prev_info = st.columns([1.5, 1.2])
+
+        with c_prev_vid:
+            if remix_v:
+                st.video(remix_v)
+                st.caption(
+                    "✨ [자동 세탁 완료] 좌우반전 + 배속 + 하단자막블러가 적용된"
+                    " 영상입니다."
                 )
-            else:
-                st.info("커버 이미지 없음")
-        with c_text:
-            st.text_area("게시물 내용 및 해시태그 (복사 가능)", description, height=165)
+            elif videos:
+                st.video(videos[0])
+                st.caption("원본 영상 미리보기")
+            elif thumb:
+                st.image(thumb, use_container_width=True)
+
+        with c_prev_info:
+            st.markdown(f"**제목:** {title}")
+            st.text_area("내용/해시태그 (복사 가능)", description, height=130)
+
+            c_btn_a, c_btn_b = st.columns(2)
+            with c_btn_a:
+                if thumb:
+                    st.download_button(
+                        "🖼 커버 이미지 다운로드",
+                        thumb,
+                        "cover.jpg",
+                        "image/jpeg",
+                        use_container_width=True,
+                    )
+            with c_btn_b:
+                # 세탁 완료 영상 최우선 다운로드
+                if remix_v:
+                    st.download_button(
+                        "⚡ 세탁 영상 받기 (MP4)",
+                        remix_v,
+                        "remix_complete.mp4",
+                        "video/mp4",
+                        type="primary",
+                        use_container_width=True,
+                    )
 
     st.markdown("---")
 
-    # 2. 미디어 규격별 다운로드
-    st.markdown("#### 🎬 영상 및 음원")
+    # 스크린샷 16 스타일: 영상 및 오디오 2열 분리 다운로드 리스트
+    st.markdown("#### 📥 규격별 미디어 다운로드")
 
     if videos:
         v_main = videos[0]
         v_size_mb = round(len(v_main) / (1024 * 1024), 1)
 
-        # UHD MP4
-        r1_col1, r1_col2 = st.columns([3, 1])
-        with r1_col1:
-            st.markdown(
-                f"**UHD MP4 (원본 화질)**  \n`{v_size_mb} MB` · 무워터마크 최고화질"
-            )
-        with r1_col2:
-            st.download_button(
+        c_v_list, c_a_list = st.columns(2)
+
+        # 좌측 열: 영상 규격
+        with c_v_list:
+            st.markdown("🎬 **영상 (Video)**")
+
+            # 1) UHD / 원본 화질
+            r1, r2 = st.columns([2, 1.2])
+            r1.markdown(f"**UHD MP4 (최고화질)**  \n`{v_size_mb} MB` · 무워터마크")
+            r2.download_button(
                 "⬇️ 다운로드",
                 v_main,
                 "video_uhd.mp4",
                 "video/mp4",
-                key="dl_uhd",
+                key="btn_uhd",
                 use_container_width=True,
                 type="primary",
             )
+            st.markdown("<hr style='margin:4px 0;'>", unsafe_allow_html=True)
 
-        st.markdown(
-            "<hr style='margin: 6px 0; border: none; border-top: 1px solid"
-            " #f1f5f9;'>",
-            unsafe_allow_html=True,
-        )
-
-        # HD MP4
-        r2_col1, r2_col2 = st.columns([3, 1])
-        with r2_col1:
-            st.markdown(
-                f"**HD MP4 (표준 화질)**  \n`{v_size_mb} MB` · 표준 호환 포맷"
-            )
-        with r2_col2:
-            st.download_button(
+            # 2) HD / 표준 화질
+            r3, r4 = st.columns([2, 1.2])
+            r3.markdown(f"**HD MP4 (표준화질)**  \n`{v_size_mb} MB` · 인코딩 최적화")
+            r4.download_button(
                 "⬇️ 다운로드",
                 v_main,
                 "video_hd.mp4",
                 "video/mp4",
-                key="dl_hd",
+                key="btn_hd",
                 use_container_width=True,
             )
 
-        st.markdown(
-            "<hr style='margin: 6px 0; border: none; border-top: 1px solid"
-            " #f1f5f9;'>",
-            unsafe_allow_html=True,
-        )
+        # 우측 열: 오디오 규격
+        with c_a_list:
+            st.markdown("🎵 **오디오 (Audio)**")
 
-        # MP3
-        r3_col1, r3_col2 = st.columns([3, 1])
-        with r3_col1:
-            st.markdown(
-                "**고음질 MP3 (배경음악/오디오)**  \n영상 내 음원만 분리 추출"
-            )
-        with r3_col2:
-            if st.button(
-                "🎵 MP3 추출", key="btn_mp3_gen", use_container_width=True
+            r5, r6 = st.columns([2, 1.2])
+            r5.markdown("**고음질 MP3 음원**  \nBGM·목소리 분리 추출")
+            if r6.button(
+                "🎵 음원 분리", key="btn_ext_mp3", use_container_width=True
             ):
-                with st.spinner("음원 분리 중..."):
-                    mp3_data = extract_mp3_from_video(v_main)
-                    if mp3_data:
-                        st.session_state["mp3_bytes"] = mp3_data
+                with st.spinner("MP3 변환 중..."):
+                    st.session_state["mp3_bytes"] = extract_mp3_from_video(
+                        v_main
+                    )
 
-        if st.session_state.get("mp3_bytes"):
-            mp3_b = st.session_state["mp3_bytes"]
-            st.download_button(
-                f"⬇️ MP3 다운로드 ({round(len(mp3_b)/(1024*1024), 1)} MB)",
-                mp3_b,
-                "audio_track.mp3",
-                "audio/mp3",
-                key="dl_mp3_btn",
-                use_container_width=True,
-            )
+            if st.session_state.get("mp3_bytes"):
+                mp3_b = st.session_state["mp3_bytes"]
+                st.download_button(
+                    f"⬇️ MP3 다운로드 ({round(len(mp3_b)/(1024*1024), 1)} MB)",
+                    mp3_b,
+                    "audio.mp3",
+                    "audio/mp3",
+                    key="dl_mp3_real",
+                    use_container_width=True,
+                )
 
+    # 사진/노트 포스트
     if images and not videos:
         st.markdown(f"**고화질 사진 ({len(images)}장)**")
         cols = st.columns(3)
@@ -922,71 +1014,13 @@ if "data" in st.session_state and st.session_state["data"]:
                 st.download_button(
                     f"⬇️ 사진 #{idx + 1} 받기",
                     img_b,
-                    f"img_{idx + 1}.jpg",
+                    f"image_{idx + 1}.jpg",
                     "image/jpeg",
                     key=f"img_dl_{idx}",
                     use_container_width=True,
                 )
 
-    st.markdown("---")
-
-    # 3. 즉석 영상 세탁 & 리사이클링 편집기
-    st.markdown("#### ✂️ 즉석 영상 세탁 & 리사이클링 편집기")
-    st.caption(
-        "타 플랫폼(스레드, 릴스, 쇼츠) 재업로드 시 중복 감지를 방지하기 위해 화면을 반전하고 미세 배속을 적용합니다."
-    )
-
-    if videos:
-        v_target = videos[0]
-        c_opt, c_view = st.columns([1.2, 1.8])
-
-        with c_opt:
-            opt_hflip = st.checkbox(
-                "🔄 좌우 반전 (Horizontal Flip)",
-                value=True,
-                help="화면 축을 반전시켜 중복 판정을 무력화합니다.",
-            )
-            opt_speed = st.select_slider(
-                "⏩ 미세 배속 조정",
-                options=[1.0, 1.05, 1.1, 1.15, 1.2],
-                value=1.1,
-                help="1.1배속은 시청 지속 시간을 늘려주고 영상 핑거프린트를 변경합니다.",
-            )
-            opt_mute = st.checkbox(
-                "🔇 원본 오디오 음소거",
-                value=False,
-                help="새로운 AI 나레이션이나 국내 BGM을 입힐 때 체크하세요.",
-            )
-
-            if st.button(
-                "🚀 리사이클링 렌더링 시작",
-                type="primary",
-                use_container_width=True,
-            ):
-                with st.spinner("FFmpeg 가속 렌더링 중..."):
-                    remix_res = process_video_remix(
-                        v_target, opt_hflip, opt_speed, opt_mute
-                    )
-                    st.session_state["remix_video"] = remix_res
-                    st.success("렌더링 완료!")
-
-        with c_view:
-            if st.session_state.get("remix_video"):
-                st.video(st.session_state["remix_video"])
-                st.download_button(
-                    "⬇️ 세탁 완료 영상 다운로드 (MP4)",
-                    st.session_state["remix_video"],
-                    "remix_final.mp4",
-                    "video/mp4",
-                    use_container_width=True,
-                )
-            else:
-                st.video(v_target)
-                st.caption("원본 미리보기")
-    else:
-        st.info("편집할 비디오 소스가 없습니다.")
-
-    # 4. 전체 일괄 압축 ZIP
+    # 전체 일괄 ZIP
     st.markdown("---")
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -995,15 +1029,17 @@ if "data" in st.session_state and st.session_state["data"]:
                 "utf-8"
             )
         )
+        if remix_v:
+            zf.writestr("remix_complete.mp4", remix_v)
         for idx, v in enumerate(videos):
-            zf.writestr(f"video_{idx + 1}.mp4", v)
+            zf.writestr(f"video_raw_{idx + 1}.mp4", v)
         for idx, i in enumerate(images):
             zf.writestr(f"image_{idx + 1}.jpg", i)
 
     st.download_button(
-        "📦 모든 미디어+대본 한 번에 받기 (ZIP)",
+        "📦 모든 미디어+세탁영상+대본 일괄 압축팩 받기 (ZIP)",
         zip_buffer.getvalue(),
-        "sns_package.zip",
+        "snap_studio_package.zip",
         "application/zip",
         use_container_width=True,
     )
