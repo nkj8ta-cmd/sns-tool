@@ -20,23 +20,51 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# SnapWC 스타일 CSS 주입
+# SnapWC 스타일 CSS 주입 (상단 잘림 완전 해결 & 탭 버튼 스타일링)
 st.markdown(
     """
 <style>
+    /* 상단 기본 헤더에 가려지지 않도록 충분한 여백 확보 */
     .block-container {
-        padding-top: 1.2rem;
-        padding-bottom: 3rem;
+        padding-top: 4.5rem !important;
+        padding-bottom: 3.5rem !important;
         max-width: 840px;
     }
+    /* 플랫폼 라디오 선택바를 깔끔한 SnapWC 탭 버튼 모양으로 전환 */
+    div[role="radiogroup"] {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 8px;
+        background: #f8fafc;
+        padding: 10px;
+        border-radius: 14px;
+        border: 1px solid #e2e8f0;
+        margin-bottom: 20px;
+    }
+    div[role="radiogroup"] label {
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        padding: 6px 14px;
+        border-radius: 20px;
+        cursor: pointer;
+        margin: 0 !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+        transition: all 0.2s ease;
+    }
+    div[role="radiogroup"] label:hover {
+        border-color: #2563eb;
+        color: #2563eb;
+    }
+    /* 메인 타이틀 그라데이션 */
     .snap-hero-title {
         text-align: center;
-        font-size: 32px;
+        font-size: 30px;
         font-weight: 800;
         background: linear-gradient(90deg, #2563eb, #db2777, #ea580c);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        margin-top: 10px;
+        margin-top: 5px;
         margin-bottom: 4px;
     }
     .snap-hero-sub {
@@ -55,10 +83,6 @@ st.markdown(
         font-size: 13.5px;
         color: #64748b;
         margin-bottom: 16px;
-    }
-    div[data-testid="stHorizontalBlock"] > div:first-child {
-        display: flex;
-        align-items: center;
     }
 </style>
 """,
@@ -87,7 +111,6 @@ def clean_social_url(raw_input):
     url_match = re.search(r"https?://[^\s]+", raw_input)
     clean = url_match.group(0) if url_match else raw_input.strip()
 
-    # 샤오홍슈 단축 링크(xhslink.com) 또는 스레드 share 링크 자동 추적
     if "xhslink.com" in clean or "/share/" in clean:
         try:
             head_res = requests.head(
@@ -100,7 +123,6 @@ def clean_social_url(raw_input):
         except Exception:
             pass
 
-    # rednote.com 링크 표준화
     if "rednote.com" in clean:
         clean = clean.replace("rednote.com/discovery/item/", "xiaohongshu.com/explore/")
         clean = clean.replace("rednote.com", "xiaohongshu.com")
@@ -137,7 +159,6 @@ def extract_direct_meta(url):
     description = "추출된 본문이 없습니다."
     videos, images = [], []
 
-    # 샤오홍슈 JSON 파싱
     if "xiaohongshu.com" in url or "rednote" in url:
         try:
             json_match = re.search(
@@ -172,7 +193,6 @@ def extract_direct_meta(url):
         except Exception:
             pass
 
-    # 메타 태그 Fallback
     if not description or description == "추출된 본문이 없습니다.":
         desc_match = re.search(
             r'<meta\s+(?:property|name)=["\'](?:og:description|twitter:description)["\']\s+content=["\'](.*?)["\']',
@@ -378,7 +398,7 @@ def process_video_remix(video_bytes, hflip, speed, mute):
 
 
 # ==========================================
-# UI 1. 상단 SnapWC 플랫폼 전환 메뉴 바
+# UI 1. 상단 SnapWC 플랫폼 선택 바 (위치 완전 노출)
 # ==========================================
 platform_list = [
     "📕 샤오홍슈",
@@ -397,7 +417,6 @@ selected_platform = st.radio(
     label_visibility="collapsed",
 )
 
-# 선택된 플랫폼별 동적 타이틀 및 안내 설정
 title_map = {
     "📕 샤오홍슈": (
         "샤오홍슈 워터마크 없는 다운로드",
@@ -435,14 +454,14 @@ st.markdown(
 )
 
 # ==========================================
-# UI 2. 한글 ➔ 중국어 바이럴 치트키 검색기 (전면 상단 배치)
+# UI 2. 한글 ➔ 중국어 바이럴 키워드 검색기
 # ==========================================
 with st.expander(
-    "🔍 한글 ➔ 샤오홍슈 바이럴 중국어 키워드 검색기 (치트키 조합)",
+    "🔍 한글 ➔ 샤오홍슈 바이럴 키워드 검색기 (치트키 자동 조합)",
     expanded=(selected_platform == "📕 샤오홍슈"),
 ):
     st.caption(
-        "한글로 제품명을 적고 엔터를 누르면 중국 현지 바이럴 검색어로 즉시 변환되어 샤오홍슈로 바로 연결됩니다."
+        "한글 제품명을 입력하면 중국 현지 바이럴 검색어로 즉시 조합되어 샤오홍슈 검색창으로 연결됩니다."
     )
     with st.form("trans_form"):
         k_col1, k_col2 = st.columns([3.5, 1.2])
@@ -459,7 +478,7 @@ with st.expander(
 
     if trans_submit and kor_keyword.strip():
         try:
-            with st.spinner("중국어 번역 및 바이럴 조합 생성 중..."):
+            with st.spinner("중국어 번역 및 치트키 조합 중..."):
                 translated = get_chinese_translation(kor_keyword)
                 presets = [
                     ("🎬 시각적 ASMR / 쾌감", f"{translated} 解压 沉浸式"),
@@ -507,7 +526,7 @@ if analyze_btn:
     if not url_input.strip():
         st.warning("링크 또는 공유 텍스트를 입력해 주세요.")
     else:
-        with st.spinner("미디어 분석 및 분리 추출 중..."):
+        with st.spinner("미디어 분석 및 무워터마크 추출 중..."):
             try:
                 target_url = clean_social_url(url_input)
 
@@ -551,7 +570,7 @@ if "data" in st.session_state and st.session_state["data"]:
         unsafe_allow_html=True,
     )
 
-    # 1. 상단 프리뷰 카드 (커버 이미지 + 본문/해시태그)
+    # 1. 상단 프리뷰 카드 (커버 이미지 + 본문)
     with st.container():
         c_thumb, c_text = st.columns([1.3, 2.7])
         with c_thumb:
