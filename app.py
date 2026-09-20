@@ -11,7 +11,7 @@ import requests
 import streamlit as st
 import yt_dlp
 
-# 1. 사이트 이름 변경
+# 1. 사이트 이름: SNS 다운로더
 st.set_page_config(
     page_title="SNS 다운로더",
     page_icon="⚡",
@@ -96,7 +96,7 @@ if "mp3_bytes" not in st.session_state:
 
 
 # ==========================================
-# URL 정제 엔진
+# 1. URL 정제 (단축링크 & 쇼츠 정규화)
 # ==========================================
 def clean_social_url(raw_text):
     m = re.search(r"https?://[^\s<>\"']+", raw_text)
@@ -122,7 +122,7 @@ def clean_social_url(raw_text):
 
 
 # ==========================================
-# RedNote (샤오홍슈) 직접 추출 엔진
+# 2. RedNote (샤오홍슈) 무워터마크 직접 추출
 # ==========================================
 def extract_rednote(target_url):
     session = requests.Session()
@@ -193,7 +193,7 @@ def extract_rednote(target_url):
 
 
 # ==========================================
-# Threads (스레드) 추출 엔진
+# 3. Threads (스레드) 추출 엔진
 # ==========================================
 def extract_threads(target_url):
     session = requests.Session()
@@ -235,78 +235,77 @@ def extract_threads(target_url):
 
 
 # ==========================================
-# YouTube & Instagram 추출 엔진 (403 에러 완벽 해결)
+# 4. YouTube 봇 차단 우회 & Instagram 범용 추출
 # ==========================================
 def extract_generic_or_youtube(target_url):
     temp_dir = tempfile.mkdtemp()
-    
-    # 403 차단을 회피하는 ios / mweb 클라이언트 및 단일 통합 포맷 설정
-    ydl_opts = {
-        "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
-        "quiet": True,
-        "no_warnings": True,
-        "format": "18/22/best[ext=mp4]/best",
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["ios", "mweb"],
-                "player_skip": ["webpage", "configs"],
+
+    # 봇 차단(Sign in to confirm you're not a bot) 우회 클라이언트 다중 시도
+    client_fallbacks = [
+        ["android"],
+        ["web_creator"],
+        ["web_safari"],
+        ["mweb", "web"],
+    ]
+
+    last_error = None
+
+    for client_list in client_fallbacks:
+        ydl_opts = {
+            "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+            "format": "best[ext=mp4]/best",
+        }
+
+        if os.path.exists("cookies.txt"):
+            ydl_opts["cookiefile"] = "cookies.txt"
+
+        if "youtube.com" in target_url or "youtu.be" in target_url:
+            ydl_opts["extractor_args"] = {
+                "youtube": {
+                    "player_client": client_list
+                }
             }
-        },
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
-        },
-    }
+            ydl_opts["http_headers"] = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+            }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(target_url, download=True)
-            title = info.get("title", "SNS Media")
-            desc = info.get("description", "")
-            thumb_url = info.get("thumbnail")
-    except Exception:
-        # Fallback: 직접 스트림 URL 추출 후 다운로드
-        ydl_opts["format"] = "best"
-        ydl_opts["extractor_args"]["youtube"]["player_client"] = ["tv_embedded", "mweb"]
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(target_url, download=False)
-            title = info.get("title", "SNS Media")
-            desc = info.get("description", "")
-            thumb_url = info.get("thumbnail")
-            direct_url = info.get("url")
-            
-            if direct_url:
-                r = requests.get(direct_url, timeout=25, headers=ydl_opts["http_headers"])
-                if r.status_code == 200:
-                    thumb_b = None
-                    if thumb_url:
-                        try:
-                            thumb_b = requests.get(thumb_url, timeout=8).content
-                        except Exception:
-                            pass
-                    return {"title": title, "desc": desc, "video": r.content, "images": [], "thumb": thumb_b}
-        raise Exception("YouTube 비디오 스트림을 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.")
-
-    video_bytes = None
-    for f in glob.glob(os.path.join(temp_dir, "*")):
-        if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm")):
-            with open(f, "rb") as fp:
-                video_bytes = fp.read()
-            break
-
-    thumb_bytes = None
-    if thumb_url:
         try:
-            tr = requests.get(thumb_url, timeout=8)
-            if tr.status_code == 200:
-                thumb_bytes = tr.content
-        except Exception:
-            pass
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(target_url, download=True)
+                title = info.get("title", "SNS Media")
+                desc = info.get("description", "")
+                thumb_url = info.get("thumbnail")
 
-    return {"title": title, "desc": desc, "video": video_bytes, "images": [], "thumb": thumb_bytes}
+            video_bytes = None
+            for f in glob.glob(os.path.join(temp_dir, "*")):
+                if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm")):
+                    with open(f, "rb") as fp:
+                        video_bytes = fp.read()
+                    break
+
+            if video_bytes:
+                thumb_bytes = None
+                if thumb_url:
+                    try:
+                        tr = requests.get(thumb_url, timeout=8)
+                        if tr.status_code == 200:
+                            thumb_bytes = tr.content
+                    except Exception:
+                        pass
+                return {"title": title, "desc": desc, "video": video_bytes, "images": [], "thumb": thumb_bytes}
+
+        except Exception as e:
+            last_error = e
+            continue
+
+    raise last_error or Exception("YouTube 비디오를 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.")
 
 
 # ==========================================
-# FFmpeg 가공 & MP3 음원 분리
+# 5. FFmpeg 편집 엔진 (좌우 반전 & 1.1배속)
 # ==========================================
 def process_editing(video_bytes, hflip, speed):
     if not hflip and speed == 1.0:
@@ -331,7 +330,7 @@ def process_editing(video_bytes, hflip, speed):
         ["ffmpeg", "-y", "-i", in_path]
         + vf_cmd
         + af_cmd
-        + ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", out_path]
+        + ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-strict", "experimental", out_path]
     )
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -344,6 +343,7 @@ def process_editing(video_bytes, hflip, speed):
     return video_bytes
 
 
+# MP3 음원 추출
 def extract_mp3_audio(video_bytes):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as in_f:
         in_f.write(video_bytes)
@@ -367,14 +367,14 @@ def clear_text():
 
 
 # ==========================================
-# UI 1. 상단 타이틀 (SNS 다운로더)
+# UI 1. 헤더 (SNS 다운로더)
 # ==========================================
 st.markdown('<div class="snap-title">SNS 다운로더</div>', unsafe_allow_html=True)
 st.markdown('<div class="snap-sub">YouTube (Shorts/Longform) · RedNote · TikTok · Reels · Threads 무워터마크 저장</div>', unsafe_allow_html=True)
 
 
 # ==========================================
-# UI 2. 주소창 (지우기 ✖ & 붙여넣기 📋)
+# UI 2. 주소 입력창 (지우기 ✖ & 붙여넣기 📋)
 # ==========================================
 c_in, c_clear, c_paste, c_btn = st.columns([3.8, 0.45, 0.45, 1.3])
 
@@ -410,24 +410,25 @@ with c_btn:
     submit_btn = st.button("다운로드 링크 받기", use_container_width=True, type="primary")
 
 st.markdown(
-    '<div class="support-sites">YouTube, RedNote(샤오홍슈), TikTok, Instagram, Threads 전 세계 사이트 지원</div>',
+    '<div class="support-sites">YouTube, RedNote(샤오홍슈), TikTok, Instagram, Threads 지원</div>',
     unsafe_allow_html=True,
 )
 
 
 # ==========================================
-# UI 3. 심플 편집 옵션 (기본 미클릭 / 1.0x 배속)
+# UI 3. 영상 편집 옵션 (반전 기본 미체크, 배속 기본 1.1)
 # ==========================================
-with st.expander("⚙️ 영상 편집 옵션 (기본: 원본 그대로)", expanded=False):
+with st.expander("⚙️ 영상 편집 옵션", expanded=False):
     col_opt1, col_opt2 = st.columns(2)
     with col_opt1:
         opt_flip = st.checkbox("🔄 좌우 대칭 변경 (반전)", value=False)
     with col_opt2:
-        opt_speed = st.selectbox("⏩ 배속 선택", [1.0, 1.05, 1.1, 1.15, 1.2], index=0)
+        # 요청사항 반영: 배속 기본값을 1.1로 설정 (index=2)
+        opt_speed = st.selectbox("⏩ 배속 선택", [1.0, 1.05, 1.1, 1.15, 1.2], index=2)
 
 
 # ==========================================
-# 다운로드 실행 및 진행률 바
+# 다운로드 실행 및 실시간 진행률 바
 # ==========================================
 if submit_btn:
     if not url_input_val.strip():
@@ -435,13 +436,12 @@ if submit_btn:
     else:
         target_link = clean_social_url(url_input_val)
         if not target_link:
-            st.error("입력한 텍스트에서 올바른 링크(https://...)를 찾을 수 없습니다.")
+            st.error("입력한 텍스트에서 올바른 링크를 찾을 수 없습니다.")
         else:
-            # 3. 진행률 바 생성
-            p_bar = st.progress(10, text="⌛ 링크 분석 및 리다이렉트 추적 중... 10%")
+            p_bar = st.progress(10, text="⌛ 링크 분석 및 모바일 리다이렉트 추적... 10%")
             try:
                 time.sleep(0.2)
-                p_bar.progress(40, text="⚡ 무워터마크 미디어 스트림 추출 중... 40%")
+                p_bar.progress(40, text="⚡ 미디어 무워터마크 스트림 추출 중... 40%")
 
                 if "rednote.com" in target_link or "xiaohongshu.com" in target_link:
                     raw = extract_rednote(target_link)
@@ -450,7 +450,7 @@ if submit_btn:
                 else:
                     raw = extract_generic_or_youtube(target_link)
 
-                p_bar.progress(80, text="✂️ 미디어 패키징 및 편집 처리 중... 80%")
+                p_bar.progress(75, text=f"✂️ 영상 편집 처리 중 (배속: {opt_speed}x)... 75%")
 
                 final_video = None
                 if raw.get("video"):
@@ -467,31 +467,33 @@ if submit_btn:
                     "title": raw.get("title", "SNS Media"),
                     "desc": raw.get("desc", ""),
                     "thumb": raw.get("thumb"),
+                    "speed_used": opt_speed,
                 }
                 st.session_state["mp3_bytes"] = None
                 st.success("✅ 다운로드 링크가 준비되었습니다!")
-
             except Exception as err:
                 p_bar.empty()
                 st.error(f"다운로드 실패: {err}")
 
 
 # ==========================================
-# 4. 미리보기 생성 및 결과 화면 (SnapWC 1:1 완벽 구현)
+# UI 4. 파일 미리보기 및 다운로드 카드 (스크린샷 15 스타일)
 # ==========================================
 if st.session_state.get("processed_result"):
     data = st.session_state["processed_result"]
     vid = data.get("video")
+    raw_vid = data.get("raw_video")
     imgs = data.get("images", [])
-    title = data.get("title", "downloaded_video")
+    title = data.get("title", "")
     desc = data.get("desc", "")
     thumb = data.get("thumb")
+    speed_used = data.get("speed_used", 1.0)
 
     st.markdown("---")
     st.markdown("#### 🎬 파일 미리보기 및 다운로드")
 
     if vid:
-        # 1) 상단 대형 비디오 미리보기 플레이어
+        # 1) 영상 미리보기 플레이어
         st.video(vid)
 
         # 2) 파일명 및 상태 바
@@ -499,19 +501,28 @@ if st.session_state.get("processed_result"):
         st.markdown(f"**{clean_name}.mp4**")
         st.markdown('<div class="status-bar">다운로드가 완료되었습니다.</div>', unsafe_allow_html=True)
 
-        # 3) 다운로드 및 MP3 분리 섹션
+        # 3) 다운로드 버튼 영역
         v_mb = round(len(vid) / (1024 * 1024), 1)
-        r1, r2 = st.columns([1.5, 1])
-        with r1:
+        c_d1, c_d2 = st.columns([1.5, 1])
+        with c_d1:
             st.download_button(
-                f"⬇️ 무워터마크 MP4 받기 ({v_mb} MB)",
+                f"⬇️ {speed_used}배속 편집 영상 다운로드 ({v_mb} MB)",
                 vid,
-                f"{clean_name}.mp4",
+                f"{clean_name}_{speed_used}x.mp4",
                 "video/mp4",
                 type="primary",
                 use_container_width=True,
             )
-        with r2:
+            if raw_vid and speed_used != 1.0:
+                raw_mb = round(len(raw_vid) / (1024 * 1024), 1)
+                st.download_button(
+                    f"⬇️ 원본 영상 다운로드 ({raw_mb} MB)",
+                    raw_vid,
+                    f"{clean_name}_raw.mp4",
+                    "video/mp4",
+                    use_container_width=True,
+                )
+        with c_d2:
             if thumb:
                 st.download_button(
                     "🖼 커버 이미지 다운로드",
@@ -523,7 +534,7 @@ if st.session_state.get("processed_result"):
 
         st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
 
-        # MP3 오디오 분리
+        # MP3 음원 분리
         a1, a2 = st.columns([1.5, 1])
         with a1:
             if st.button("🎵 고음질 MP3 음원 분리", use_container_width=True):
@@ -545,7 +556,7 @@ if st.session_state.get("processed_result"):
             st.text_area("게시물 원본 텍스트", desc, height=95)
 
     elif imgs:
-        st.markdown(f"**고화질 사진 노트 ({len(imgs)}장)**")
+        st.markdown(f"**고화질 사진 ({len(imgs)}장)**")
         img_cols = st.columns(3)
         for idx, img_b in enumerate(imgs):
             with img_cols[idx % 3]:
