@@ -11,7 +11,6 @@ import requests
 import streamlit as st
 import yt_dlp
 
-# 1. 사이트 이름: SNS 다운로더
 st.set_page_config(
     page_title="SNS 다운로더",
     page_icon="⚡",
@@ -96,7 +95,7 @@ if "mp3_bytes" not in st.session_state:
 
 
 # ==========================================
-# 1. URL 정제 (단축링크 & 쇼츠 정규화)
+# 1. URL 정제 엔진
 # ==========================================
 def clean_social_url(raw_text):
     m = re.search(r"https?://[^\s<>\"']+", raw_text)
@@ -115,14 +114,14 @@ def clean_social_url(raw_text):
         shorts_id = clean.split("shorts/")[1].split("?")[0].split("&")[0]
         clean = f"https://www.youtube.com/watch?v={shorts_id}"
     elif "youtu.be/" in clean:
-        vid_id = clean.split("youtu.be/")[1].split("?")[0]
+        vid_id = clean.split("youtu.be/")[1].split("?")[0].split("&")[0]
         clean = f"https://www.youtube.com/watch?v={vid_id}"
 
     return clean
 
 
 # ==========================================
-# 2. RedNote (샤오홍슈) 무워터마크 직접 추출
+# 2. RedNote (샤오홍슈) 추출 엔진
 # ==========================================
 def extract_rednote(target_url):
     session = requests.Session()
@@ -235,73 +234,65 @@ def extract_threads(target_url):
 
 
 # ==========================================
-# 4. YouTube 봇 차단 우회 & Instagram 범용 추출
+# 4. YouTube & Instagram 추출 엔진 (포맷 에러 완벽 수정)
 # ==========================================
 def extract_generic_or_youtube(target_url):
     temp_dir = tempfile.mkdtemp()
+    out_tmpl = os.path.join(temp_dir, "%(id)s.%(ext)s")
 
-    # 봇 차단(Sign in to confirm you're not a bot) 우회 클라이언트 다중 시도
-    client_fallbacks = [
-        ["android"],
-        ["web_creator"],
-        ["web_safari"],
-        ["mweb", "web"],
-    ]
-
-    last_error = None
-
-    for client_list in client_fallbacks:
-        ydl_opts = {
-            "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
-            "quiet": True,
-            "no_warnings": True,
-            "format": "best[ext=mp4]/best",
-        }
-
-        if os.path.exists("cookies.txt"):
-            ydl_opts["cookiefile"] = "cookies.txt"
-
-        if "youtube.com" in target_url or "youtu.be" in target_url:
-            ydl_opts["extractor_args"] = {
-                "youtube": {
-                    "player_client": client_list
-                }
+    # 분리된 스트림 병합 포맷 지정 (Requested format is not available 해결)
+    ydl_opts = {
+        "outtmpl": out_tmpl,
+        "quiet": True,
+        "no_warnings": True,
+        "format": "bestvideo*+bestaudio/best",
+        "merge_output_format": "mp4",
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"]
             }
-            ydl_opts["http_headers"] = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
-            }
+        },
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+        },
+    }
 
+    if os.path.exists("cookies.txt"):
+        ydl_opts["cookiefile"] = "cookies.txt"
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(target_url, download=True)
+            title = info.get("title", "SNS Media")
+            desc = info.get("description", "")
+            thumb_url = info.get("thumbnail")
+    except Exception:
+        # Fallback: 클라이언트 tv_embedded로 재시도
+        ydl_opts["extractor_args"]["youtube"]["player_client"] = ["tv_embedded"]
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(target_url, download=True)
+            title = info.get("title", "SNS Media")
+            desc = info.get("description", "")
+            thumb_url = info.get("thumbnail")
+
+    video_bytes = None
+    for f in glob.glob(os.path.join(temp_dir, "*")):
+        if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm")):
+            with open(f, "rb") as fp:
+                video_bytes = fp.read()
+            break
+
+    thumb_bytes = None
+    if thumb_url:
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(target_url, download=True)
-                title = info.get("title", "SNS Media")
-                desc = info.get("description", "")
-                thumb_url = info.get("thumbnail")
+            tr = requests.get(thumb_url, timeout=8)
+            if tr.status_code == 200:
+                thumb_bytes = tr.content
+        except Exception:
+            pass
 
-            video_bytes = None
-            for f in glob.glob(os.path.join(temp_dir, "*")):
-                if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm")):
-                    with open(f, "rb") as fp:
-                        video_bytes = fp.read()
-                    break
-
-            if video_bytes:
-                thumb_bytes = None
-                if thumb_url:
-                    try:
-                        tr = requests.get(thumb_url, timeout=8)
-                        if tr.status_code == 200:
-                            thumb_bytes = tr.content
-                    except Exception:
-                        pass
-                return {"title": title, "desc": desc, "video": video_bytes, "images": [], "thumb": thumb_bytes}
-
-        except Exception as e:
-            last_error = e
-            continue
-
-    raise last_error or Exception("YouTube 비디오를 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.")
+    return {"title": title, "desc": desc, "video": video_bytes, "images": [], "thumb": thumb_bytes}
 
 
 # ==========================================
@@ -321,7 +312,8 @@ def process_editing(video_bytes, hflip, speed):
     if hflip:
         filters.append("hflip")
     if speed != 1.0:
-        filters.append(f"setpts={1.0 / speed}*PTS")
+        pts = round(1.0 / speed, 5)
+        filters.append(f"setpts={pts}*PTS")
 
     vf_cmd = ["-vf", ",".join(filters)] if filters else []
     af_cmd = ["-filter:a", f"atempo={speed}"] if speed != 1.0 else []
@@ -343,7 +335,6 @@ def process_editing(video_bytes, hflip, speed):
     return video_bytes
 
 
-# MP3 음원 추출
 def extract_mp3_audio(video_bytes):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as in_f:
         in_f.write(video_bytes)
@@ -367,14 +358,14 @@ def clear_text():
 
 
 # ==========================================
-# UI 1. 헤더 (SNS 다운로더)
+# UI 1. 상단 타이틀 (SNS 다운로더)
 # ==========================================
 st.markdown('<div class="snap-title">SNS 다운로더</div>', unsafe_allow_html=True)
 st.markdown('<div class="snap-sub">YouTube (Shorts/Longform) · RedNote · TikTok · Reels · Threads 무워터마크 저장</div>', unsafe_allow_html=True)
 
 
 # ==========================================
-# UI 2. 주소 입력창 (지우기 ✖ & 붙여넣기 📋)
+# UI 2. 주소창 (지우기 ✖ & 붙여넣기 📋)
 # ==========================================
 c_in, c_clear, c_paste, c_btn = st.columns([3.8, 0.45, 0.45, 1.3])
 
@@ -423,7 +414,7 @@ with st.expander("⚙️ 영상 편집 옵션", expanded=False):
     with col_opt1:
         opt_flip = st.checkbox("🔄 좌우 대칭 변경 (반전)", value=False)
     with col_opt2:
-        # 요청사항 반영: 배속 기본값을 1.1로 설정 (index=2)
+        # 배속 기본값 1.1 고정 (index=2)
         opt_speed = st.selectbox("⏩ 배속 선택", [1.0, 1.05, 1.1, 1.15, 1.2], index=2)
 
 
@@ -484,7 +475,7 @@ if st.session_state.get("processed_result"):
     vid = data.get("video")
     raw_vid = data.get("raw_video")
     imgs = data.get("images", [])
-    title = data.get("title", "")
+    title = data.get("title", "downloaded_video")
     desc = data.get("desc", "")
     thumb = data.get("thumb")
     speed_used = data.get("speed_used", 1.0)
