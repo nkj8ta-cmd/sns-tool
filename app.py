@@ -349,8 +349,8 @@ def make_preview(video_bytes):
     try:
         subprocess.run(
             ["ffmpeg", "-y", "-i", in_path, "-t", "180",
-             "-vf", "scale='min(720,iw)':-2",
-             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-pix_fmt", "yuv420p",
+             "-vf", "scale='min(1920,iw)':-2",
+             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p",
              "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out_path],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -366,18 +366,21 @@ def make_preview(video_bytes):
     return video_bytes, info["w"], info["h"]
 
 
-def show_video(video_bytes, w=None, h=None):
-    """원본 화면비 그대로 표시 (세로 영상은 가운데, 가로 영상은 전체 폭)."""
+MAX_PREVIEW_H = 720      # 미리보기 최대 높이(px). 더 크게 보고 싶으면 값을 올리세요.
+
+
+def show_video(video_bytes, w=None, h=None, container_px=820):
+    """원본 픽셀 크기 그대로 표시. 화면 폭/최대 높이를 넘으면 같은 비율로 축소, 가운데 정렬."""
     if w and h:
-        ratio = w / h
-        if ratio < 0.9:
-            _, mid, _ = st.columns([1, 1.3, 1])
-        elif ratio < 1.1:
-            _, mid, _ = st.columns([1, 2, 1])
-        else:
-            mid = st.container()
-        with mid:
+        disp_w = min(w, container_px, MAX_PREVIEW_H * w / h)
+        frac = max(0.2, min(1.0, disp_w / container_px))
+        if frac >= 0.98:
             st.video(video_bytes)
+        else:
+            side = (1 - frac) / 2
+            _, mid, _ = st.columns([side, frac, side])
+            with mid:
+                st.video(video_bytes)
     else:
         st.video(video_bytes)
 
@@ -586,16 +589,41 @@ def extract_threads(target_url):
     session = requests.Session()
     page_headers = {"User-Agent": "facebookexternalhit/1.1", "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8"}
     dl_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
-    res = session.get(target_url, headers=page_headers, timeout=10)
-    page_html = html.unescape(res.text).replace(r"\/", "/").replace("\\u0026", "&")
+    base_url = target_url.split("?")[0].rstrip("/")
+    sources = [
+        (target_url, page_headers),
+        (target_url, dl_headers),
+        (base_url + "/embed", dl_headers),
+    ]
+    texts = []
+    for src_url, hdrs in sources:
+        try:
+            rr = session.get(src_url, headers=hdrs, timeout=10)
+            if rr.status_code == 200 and rr.text:
+                texts.append(html.unescape(rr.text).replace(r"\/", "/").replace("\\u0026", "&"))
+        except Exception:
+            continue
+    if not texts:
+        raise Exception("Threads 페이지를 불러오지 못했습니다.")
+    page_html = "\n".join(texts)
+    og_page = texts[0]
 
-    title, desc = "Threads Content", ""
-    t_m = re.search(r'<meta\s+property=["\']og:title["\']\s+content=["\'](.*?)["\']', page_html)
-    if t_m and t_m.group(1).strip():
-        title = t_m.group(1).strip()
-    d_m = re.search(r'<meta\s+property=["\']og:description["\']\s+content=["\'](.*?)["\']', page_html)
-    if d_m:
-        desc = d_m.group(1)
+    def _og(prop):
+        for pat in (
+            rf'<meta[^>]+property=["\']{prop}["\'][^>]+content=["\'](.*?)["\']',
+            rf'<meta[^>]+content=["\'](.*?)["\'][^>]+property=["\']{prop}["\']',
+        ):
+            mm = re.search(pat, og_page)
+            if mm and mm.group(1).strip():
+                return mm.group(1).strip()
+        return ""
+
+    title = _og("og:title") or "Threads Content"
+    desc = _og("og:description")
+    channel = ""
+    h_m = re.search(r"\(@([\w.]+)\)", title)
+    if h_m:
+        channel = "@" + h_m.group(1)
 
     # 후보 URL: og:video(보통 음성 포함 완성본) 우선, 그 다음 페이지 내 mp4 전부
     cands = []
@@ -664,8 +692,8 @@ def extract_threads(target_url):
 
     if not video_bytes and not images:
         raise Exception("Threads 게시물에서 영상/사진을 찾지 못했습니다. (비공개이거나 구조가 바뀌었을 수 있어요)")
-    return {"title": title, "desc": desc, "channel": "", "video": video_bytes,
-            "images": images, "thumb": images[0] if images else None}
+    return {"title": title, "desc": desc, "channel": channel, "video": video_bytes,
+            "images": [] if video_bytes else images, "thumb": images[0] if images else None}
 
 
 def extract_generic(target_url):
@@ -806,7 +834,23 @@ if submit_btn:
                         try:
                             raw = extract_threads(target_link)
                         except Exception:
-                            raw = extract_generic(target_link)  # yt-dlp로 한 번 더 시도
+                            raw = {"title": "Threads Content", "desc": "", "channel": "", "video": None,
+                                   "images": [], "thumb": None}
+                        if not raw.get("video"):
+                            # 페이지에서 영상을 못 찾으면 yt-dlp로 한 번 더 시도
+                            try:
+                                g = extract_generic(target_link)
+                                if g.get("video"):
+                                    raw["video"] = g["video"]
+                                    raw["images"] = []  # og:image는 게시물 카드 캡처라 영상이 있으면 제외
+                                    raw["thumb"] = raw.get("thumb") or g.get("thumb")
+                                    for k in ("channel", "date", "views", "likes", "comments"):
+                                        raw[k] = raw.get(k) or g.get(k)
+                                    raw["desc"] = raw.get("desc") or g.get("desc", "")
+                            except Exception:
+                                pass
+                        if not raw.get("video") and not raw.get("images"):
+                            raise Exception("Threads 게시물에서 영상/사진을 찾지 못했습니다.")
                     else:
                         raw = extract_generic(target_link)
 
@@ -896,6 +940,14 @@ if res:
     vid, raw_vid, imgs = res["video"], res["raw_video"], res["images"]
 
     if vid:
+        st.markdown("---")
+        pv_bytes, pv_w, pv_h = res["preview"]
+        vi0 = res.get("vinfo") or {}
+        st.markdown('<div class="col-head">▶ 미리보기</div>', unsafe_allow_html=True)
+        show_video(pv_bytes, pv_w, pv_h)
+        size_note = f"원본 크기 {vi0['w']}×{vi0['h']}" if vi0.get("w") and vi0.get("h") else ""
+        edit_note = " · 편집 적용본" if res["edited"] else ""
+        st.caption(f"{size_note}{edit_note}".strip(" ·"))
         st.markdown("---")
         col_v, col_a = st.columns(2)
         vi = res.get("vinfo") or {}
