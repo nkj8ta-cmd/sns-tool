@@ -20,35 +20,38 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# SnapWC 스타일 CSS + 주소창 액션 버튼(✖, 📋) 스타일링
+# 상단 여백을 7rem으로 대폭 확보하여 메뉴 가림을 완전히 해결한 CSS
 st.markdown(
     """
 <style>
+    /* 상단 헤더에 가려지지 않도록 여백을 대폭 확보 */
     .block-container {
-        padding-top: 2rem !important;
+        padding-top: 7rem !important;
         padding-bottom: 3.5rem !important;
-        max-width: 900px;
+        max-width: 920px;
     }
-    /* 플랫폼 라디오 선택바 */
+    /* 플랫폼 선택 버튼 디자인 */
     div[role="radiogroup"] {
         display: flex;
         flex-wrap: wrap;
         justify-content: center;
-        gap: 8px;
+        gap: 10px;
         background: #f8fafc;
-        padding: 10px;
-        border-radius: 14px;
+        padding: 12px;
+        border-radius: 16px;
         border: 1px solid #e2e8f0;
-        margin-bottom: 20px;
+        margin-bottom: 25px;
     }
     div[role="radiogroup"] label {
         background: #ffffff;
         border: 1px solid #cbd5e1;
-        padding: 6px 14px;
+        padding: 8px 16px;
         border-radius: 20px;
         cursor: pointer;
+        font-size: 14px;
+        font-weight: 600;
         margin: 0 !important;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         transition: all 0.2s ease;
     }
     div[role="radiogroup"] label:hover {
@@ -71,21 +74,6 @@ st.markdown(
         color: #64748b;
         margin-bottom: 22px;
     }
-    /* 랭킹 카드 사이드바 스타일 */
-    .rank-card {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        padding: 10px;
-        margin-bottom: 10px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.03);
-    }
-    .rank-badge {
-        font-weight: 800;
-        font-size: 14px;
-        color: #ef4444;
-        margin-right: 5px;
-    }
     .stat-badge {
         display: inline-block;
         font-size: 11.5px;
@@ -99,7 +87,6 @@ st.markdown(
 </style>
 
 <script>
-// 클립보드 붙여넣기 자바스크립트 브리지
 async function pasteFromClipboard() {
     try {
         const text = await navigator.clipboard.readText();
@@ -115,7 +102,7 @@ async function pasteFromClipboard() {
             }
         }
     } catch (e) {
-        alert("브라우저 클립보드 권한을 허용해주세요. (Ctrl+V로 직접 붙여넣으셔도 됩니다)");
+        alert("클립보드 권한을 허용해주세요. (Ctrl+V로 직접 붙여넣으셔도 됩니다)");
     }
 }
 </script>
@@ -137,7 +124,7 @@ if "trigger_analyze" not in st.session_state:
 
 
 # ==========================================
-# 1. 중국어 번역 캐싱 엔진
+# 1. 번역 캐싱 엔진
 # ==========================================
 @st.cache_data(show_spinner=False)
 def get_chinese_translation(text):
@@ -151,7 +138,7 @@ def get_chinese_translation(text):
 
 
 # ==========================================
-# 2. URL 전처리
+# 2. URL 전처리 엔진
 # ==========================================
 def clean_social_url(raw_input):
     url_match = re.search(r"https?://[^\s]+", raw_input)
@@ -367,7 +354,7 @@ def download_media_package(target_url):
 
 
 # ==========================================
-# 5. FFmpeg 엔진 (MP3 추출 & 세탁 편집)
+# 5. FFmpeg 엔진
 # ==========================================
 def extract_mp3_from_video(video_bytes):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as in_file:
@@ -444,11 +431,10 @@ def process_video_remix(video_bytes, hflip, speed, mute):
 
 
 # ==========================================
-# 6. 실시간 바이럴 TOP 50 랭킹 데이터 생성기
+# 6. 실시간 바이럴 TOP 50 데이터 엔진 (검색 링크 최적화)
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_viral_top50(platform):
-    # 실제 소싱에서 가장 반응 좋은 카테고리별 바이럴 아이템 50선
     categories = [
         "생활/청소/정리",
         "주방/요리/푸드",
@@ -458,42 +444,42 @@ def get_viral_top50(platform):
     ]
 
     xhs_items = [
-        ("전동 틈새 청소 브러쉬 (원터치 회전)", "https://www.xiaohongshu.com/explore", 18.4, 3200, 142, 8500),
-        ("먼지 안 날리는 틈새 정전기 포", "https://www.xiaohongshu.com/explore", 14.1, 2100, 98, 6200),
-        ("실리콘 계란 프라이 4구 팬", "https://www.xiaohongshu.com/explore", 26.5, 4800, 210, 12000),
-        ("원터치 양념통 세트 (정량 토출)", "https://www.xiaohongshu.com/explore", 21.3, 3100, 175, 9400),
-        ("자취생 접이식 빨래 바구니", "https://www.xiaohongshu.com/explore", 19.8, 2900, 130, 8100),
-        ("문걸이형 다용도 분리수거함", "https://www.xiaohongshu.com/explore", 16.2, 1950, 112, 7300),
-        ("매직 흡착 나노 테이프 거치대", "https://www.xiaohongshu.com/explore", 31.0, 5400, 260, 15000),
-        ("초음파 안경 & 귀금속 세척기", "https://www.xiaohongshu.com/explore", 15.7, 2400, 120, 6800),
-        ("실리콘 배수구 냄새 차단 트랩", "https://www.xiaohongshu.com/explore", 22.4, 3800, 190, 10500),
-        ("벽걸이 자동 센서 휴지통", "https://www.xiaohongshu.com/explore", 28.1, 4900, 230, 13200),
+        ("전동 틈새 청소 브러쉬 (원터치 회전)", "电动缝隙刷 清洁", 18.4, 3200, 142, 8500),
+        ("먼지 안 날리는 틈새 정전기 포", "静电除尘纸 缝隙", 14.1, 2100, 98, 6200),
+        ("실리콘 계란 프라이 4구 팬", "四孔煎蛋锅 早餐神器", 26.5, 4800, 210, 12000),
+        ("원터치 양념통 세트 (정량 토출)", "定量调料罐 厨房", 21.3, 3100, 175, 9400),
+        ("자취생 접이식 빨래 바구니", "折叠脏衣篮 独居", 19.8, 2900, 130, 8100),
+        ("문걸이형 다용도 분리수거함", "挂式垃圾桶 厨房", 16.2, 1950, 112, 7300),
+        ("매직 흡착 나노 테이프 거치대", "纳米双面胶 收纳神器", 31.0, 5400, 260, 15000),
+        ("초음파 안경 & 귀금속 세척기", "超声波清洗机", 15.7, 2400, 120, 6800),
+        ("실리콘 배수구 냄새 차단 트랩", "地漏防臭防虫防堵塞", 22.4, 3800, 190, 10500),
+        ("벽걸이 자동 센서 휴지통", "智能感应垃圾桶 卫生间", 28.1, 4900, 230, 13200),
     ]
 
     douyin_items = [
-        ("3초 만에 찌든 때 녹이는 탄산 버블 세제", "https://www.douyin.com", 45.2, 8200, 480, 25000),
-        ("자석 회전 차량용 무선충전 거치대", "https://www.douyin.com", 38.6, 6100, 390, 19000),
-        ("초소형 무선 에어건 먼지제거기", "https://www.douyin.com", 52.1, 9400, 560, 31000),
-        ("원터치 자동 진공 밀폐용기", "https://www.douyin.com", 33.4, 5200, 310, 16000),
-        ("스테인리스 다기능 만능 가위", "https://www.douyin.com", 29.8, 4700, 270, 14000),
-        ("스마트 센서 모션인식 침대 무드등", "https://www.douyin.com", 41.5, 7300, 420, 22000),
-        ("접이식 휴대용 텀블러 세척솔", "https://www.douyin.com", 24.1, 3600, 180, 11000),
-        ("다용도 싱크대 물막이 & 선반", "https://www.douyin.com", 27.9, 4100, 230, 13500),
-        ("실리콘 얼음틀 원터치 분리기", "https://www.douyin.com", 48.0, 8900, 510, 28000),
-        ("틈새 수납 슬림 트롤리 3단", "https://www.douyin.com", 35.7, 5800, 340, 17500),
+        ("3초 만에 찌든 때 녹이는 탄산 버블 세제", "去油污清洁剂 厨房神器", 45.2, 8200, 480, 25000),
+        ("자석 회전 차량용 무선충전 거치대", "车载手机支架 磁吸", 38.6, 6100, 390, 19000),
+        ("초소형 무선 에어건 먼지제거기", "强力涡轮暴力风扇 除尘", 52.1, 9400, 560, 31000),
+        ("원터치 자동 진공 밀폐용기", "抽真空保鲜盒", 33.4, 5200, 310, 16000),
+        ("스테인리스 다기능 만능 가위", "多功能不锈钢剪刀", 29.8, 4700, 270, 14000),
+        ("스마트 센서 모션인식 침대 무드등", "人体感应小夜灯", 41.5, 7300, 420, 22000),
+        ("접이식 휴대용 텀블러 세척솔", "杯刷 清洁无死角", 24.1, 3600, 180, 11000),
+        ("다용도 싱크대 물막이 & 선반", "水槽挡水板 沥水架", 27.9, 4100, 230, 13500),
+        ("실리콘 얼음틀 원터치 분리기", "按压式制冰盒", 48.0, 8900, 510, 28000),
+        ("틈새 수납 슬림 트롤리 3단", "夹缝收纳小推车", 35.7, 5800, 340, 17500),
     ]
 
     threads_items = [
-        ("자취 5년차가 추천하는 쿠팡 삶의 질 상승템 7가지", "https://www.threads.net", 12.8, 1450, 85, 3800),
-        ("청소 스트레스 90% 줄여준 알리익스프레스 꿀템", "https://www.threads.net", 9.4, 980, 62, 2900),
-        ("외국 틱톡에서 1000만뷰 터진 주방 아이디어 용품", "https://www.threads.net", 15.3, 1800, 110, 4500),
-        ("방 분위기 180도 바꿔주는 가성비 조명 추천", "https://www.threads.net", 8.7, 850, 54, 2400),
-        ("샤오홍슈에서 난리 난 다이어트 초간단 레시피", "https://www.threads.net", 21.0, 2600, 160, 6800),
-        ("다이소 직원도 품절될까봐 숨겨두는 꿀템 모음", "https://www.threads.net", 18.2, 2100, 135, 5900),
-        ("옷장 수납공간 2배 늘려주는 매직 옷걸이", "https://www.threads.net", 11.5, 1200, 78, 3400),
-        ("에어프라이어 200% 활용하는 필수 실리콘 바스켓", "https://www.threads.net", 14.0, 1650, 95, 4200),
-        ("욕실 곰팡이 1도 안 생기게 만드는 꿀팁템", "https://www.threads.net", 16.8, 1950, 125, 5300),
-        ("재택근무 생산성 미치게 올려준 데스크 셋업 아이템", "https://www.threads.net", 10.2, 1100, 70, 3100),
+        ("자취 5년차가 추천하는 쿠팡 삶의 질 상승템 7가지", "자취 꿀템 추천", 12.8, 1450, 85, 3800),
+        ("청소 스트레스 90% 줄여준 알리익스프레스 꿀템", "청소 꿀템 추천", 9.4, 980, 62, 2900),
+        ("외국 틱톡에서 1000만뷰 터진 주방 아이디어 용품", "주방 아이디어 상품", 15.3, 1800, 110, 4500),
+        ("방 분위기 180도 바꿔주는 가성비 조명 추천", "인테리어 조명 꿀템", 8.7, 850, 54, 2400),
+        ("샤오홍슈에서 난리 난 다이어트 초간단 레시피", "샤오홍슈 다이어트 식단", 21.0, 2600, 160, 6800),
+        ("다이소 직원도 품절될까봐 숨겨두는 꿀템 모음", "다이소 품절대란 꿀템", 18.2, 2100, 135, 5900),
+        ("옷장 수납공간 2배 늘려주는 매직 옷걸이", "옷장 수납 정리 옷걸이", 11.5, 1200, 78, 3400),
+        ("에어프라이어 200% 활용하는 필수 실리콘 바스켓", "에어프라이어 실리콘 용기", 14.0, 1650, 95, 4200),
+        ("욕실 곰팡이 1도 안 생기게 만드는 꿀팁템", "욕실 곰팡이 방지 꿀팁", 16.8, 1950, 125, 5300),
+        ("재택근무 생산성 미치게 올려준 데스크 셋업 아이템", "데스크테리어 꿀템", 10.2, 1100, 70, 3100),
     ]
 
     base_list = (
@@ -507,11 +493,21 @@ def get_viral_top50(platform):
         template = base_list[i % len(base_list)]
         cat = categories[i % len(categories)]
         multiplier = round(1.0 - (i * 0.015), 2)
+        kw = template[1]
+
+        # 로그인 팝업을 피하기 위해 바로 검색 결과 페이지로 링크 생성
+        if "샤오홍슈" in platform:
+            view_url = f"https://www.xiaohongshu.com/search_result?keyword={quote(kw)}"
+        elif "도우인" in platform:
+            view_url = f"https://www.douyin.com/search/{quote(kw)}"
+        else:
+            view_url = f"https://www.threads.net/search?q={quote(kw)}"
+
         full_50.append({
             "rank": i + 1,
             "title": f"#{i + 1} {template[0]}",
             "category": cat,
-            "url": template[1],
+            "url": view_url,
             "likes": round(template[2] * multiplier, 1),
             "comments": int(template[3] * multiplier),
             "views": int(template[4] * multiplier),
@@ -521,11 +517,11 @@ def get_viral_top50(platform):
 
 
 # ==========================================
-# UI 1. 왼쪽 사이드바: 실시간 바이럴 1~50위 랭킹 보드
+# UI 1. 왼쪽 사이드바: 바이럴 랭킹 50
 # ==========================================
 with st.sidebar:
     st.markdown("### 🔥 실시간 바이럴 TOP 50")
-    st.caption("실시간으로 좋아요·댓글·조회수가 터진 소싱 영상을 바로 확인하세요.")
+    st.caption("터진 인기 소재를 확인하고 [작업하기]로 바로 가져오세요.")
 
     rank_platform = st.radio(
         "플랫폼 선택",
@@ -550,7 +546,6 @@ with st.sidebar:
         ["좋아요 많은 순", "조회수 많은 순", "댓글 많은 순", "공유/추천 많은 순"],
     )
 
-    # 랭킹 데이터 필터링 및 정렬
     raw_ranks = get_viral_top50(rank_platform)
     filtered_ranks = [
         item
@@ -570,7 +565,6 @@ with st.sidebar:
     st.markdown(f"**총 {len(filtered_ranks)}개 인기 콘텐츠**")
     st.markdown("---")
 
-    # 1위부터 리스트 렌더링
     for item in filtered_ranks:
         r_num = item["rank"]
         badge = (
@@ -590,7 +584,6 @@ with st.sidebar:
                 unsafe_allow_html=True,
             )
 
-            # 원클릭 메인 작업창 자동 주입 버튼
             col_b1, col_b2 = st.columns([1.8, 1])
             with col_b1:
                 if st.button(
@@ -609,7 +602,7 @@ with st.sidebar:
 
 
 # ==========================================
-# UI 2. 메인 화면 상단 플랫폼 선택 바
+# UI 2. 메인 화면: 플랫폼 선택 메뉴 바 (완전 노출)
 # ==========================================
 platform_list = [
     "📕 샤오홍슈",
@@ -666,7 +659,7 @@ st.markdown(
 
 
 # ==========================================
-# UI 3. 한글 ➔ 중국어 바이럴 키워드 검색기
+# UI 3. 한글 ➔ 중국어 키워드 검색기
 # ==========================================
 with st.expander(
     "🔍 한글 ➔ 샤오홍슈 바이럴 키워드 검색기 (치트키 자동 조합)",
@@ -713,7 +706,7 @@ st.write("")
 
 
 # ==========================================
-# UI 4. 주소창 (지우기 ✖ 버튼 & 클립보드 📋 붙여넣기 탑재)
+# UI 4. 주소창 (지우기 ✖ & 붙여넣기 📋)
 # ==========================================
 c_input, c_clear, c_paste, c_btn = st.columns([3.8, 0.45, 0.45, 1.3])
 
@@ -727,7 +720,6 @@ with c_input:
     )
 
 with c_clear:
-    # ✖ 주소 지우기 버튼
     if st.button("✖", help="입력한 주소 지우기", use_container_width=True):
         st.session_state["main_url_input"] = ""
         st.session_state["data"] = None
@@ -736,14 +728,12 @@ with c_clear:
         st.rerun()
 
 with c_paste:
-    # 📋 클립보드에서 붙여넣기 버튼
     st.button(
         "📋",
         help="클립보드에서 붙여넣기",
         use_container_width=True,
         on_click=None,
     )
-    # JS 붙여넣기 자동 바인딩
     st.markdown(
         """
         <script>
@@ -771,20 +761,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# 사이드바에서 주입되었거나 다운로드 버튼을 누른 경우 처리
-should_analyze = (
-    analyze_btn
-    or st.session_state["trigger_analyze"]
-    or (current_input_val != st.session_state["main_url_input"])
-)
+# 사이드바에서 [이 영상 작업하기]가 눌렸거나 직접 다운로드를 누른 경우 실행
+auto_run = st.session_state["trigger_analyze"]
 st.session_state["trigger_analyze"] = False
 
 if analyze_btn:
     st.session_state["main_url_input"] = current_input_val
 
-if analyze_btn and not st.session_state["main_url_input"].strip():
-    st.warning("링크 또는 공유 텍스트를 입력해 주세요.")
-elif analyze_btn and st.session_state["main_url_input"].strip():
+if (analyze_btn or auto_run) and st.session_state["main_url_input"].strip():
     with st.spinner("미디어 분석 및 무워터마크 분리 추출 중..."):
         try:
             target_url = clean_social_url(st.session_state["main_url_input"])
@@ -809,7 +793,7 @@ elif analyze_btn and st.session_state["main_url_input"].strip():
 
 
 # ==========================================
-# UI 5. SnapWC 결과 카드 & 즉석 편집실
+# UI 5. 결과 화면 & 즉석 편집실
 # ==========================================
 if "data" in st.session_state and st.session_state["data"]:
     data = st.session_state["data"]
@@ -831,7 +815,7 @@ if "data" in st.session_state and st.session_state["data"]:
         unsafe_allow_html=True,
     )
 
-    # 1. 상단 프리뷰 카드 (커버 썸네일 + 본문)
+    # 1. 상단 프리뷰 카드
     with st.container():
         c_thumb, c_text = st.columns([1.3, 2.7])
         with c_thumb:
@@ -851,7 +835,7 @@ if "data" in st.session_state and st.session_state["data"]:
 
     st.markdown("---")
 
-    # 2. 미디어 규격별 다운로드 섹션
+    # 2. 미디어 규격별 다운로드
     st.markdown("#### 🎬 영상 및 음원")
 
     if videos:
@@ -903,7 +887,7 @@ if "data" in st.session_state and st.session_state["data"]:
             unsafe_allow_html=True,
         )
 
-        # MP3 음원
+        # MP3
         r3_col1, r3_col2 = st.columns([3, 1])
         with r3_col1:
             st.markdown(
@@ -929,7 +913,6 @@ if "data" in st.session_state and st.session_state["data"]:
                 use_container_width=True,
             )
 
-    # 샤오홍슈 사진/노트 포스트
     if images and not videos:
         st.markdown(f"**고화질 사진 ({len(images)}장)**")
         cols = st.columns(3)
