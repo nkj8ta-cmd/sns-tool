@@ -15,7 +15,7 @@ import streamlit as st
 import yt_dlp
 
 st.set_page_config(
-    page_title="SNS 셀러 스튜디오 - RedNote & Douyin 소싱",
+    page_title="SNS 셀러 스튜디오",
     page_icon="🛒",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -42,21 +42,6 @@ st.markdown(
         color: #64748b;
         margin-bottom: 20px;
     }
-    .clip-card {
-        background: #f8fafc;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 8px 10px;
-        margin-top: 6px;
-    }
-    .tag-clean {
-        background: #dcfce7;
-        color: #15803d;
-        font-size: 11px;
-        font-weight: 700;
-        padding: 2px 6px;
-        border-radius: 4px;
-    }
     div[role="radiogroup"] {
         display: flex;
         justify-content: center;
@@ -72,11 +57,6 @@ st.markdown(
         font-size: 14.5px;
         font-weight: 700;
         box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        transition: all 0.2s ease;
-    }
-    div[role="radiogroup"] label:hover {
-        border-color: #2563eb;
-        color: #2563eb;
     }
 </style>
 """,
@@ -85,7 +65,7 @@ st.markdown(
 
 # 세션 상태 초기화
 if "mode_choice" not in st.session_state:
-    st.session_state["mode_choice"] = "⚡ [모드 1] 단일 영상 정밀 세탁 & 대본"
+    st.session_state["mode_choice"] = "⚡ [모드 1] 단일 영상 세탁 & 대본"
 if "m1_url" not in st.session_state:
     st.session_state["m1_url"] = ""
 if "mu1" not in st.session_state:
@@ -103,8 +83,19 @@ if "mashup_data" not in st.session_state:
 
 
 # ==========================================
-# 1. 번역 및 URL 정제 엔진
+# 1. 언어 감지 및 검색어 처리 (한글/중국어 동시 지원)
 # ==========================================
+def get_clean_search_query(text):
+    clean = text.strip()
+    # 이미 중국어가 포함되어 있다면 번역하지 않고 그대로 사용
+    if re.search(r"[\u4e00-\u9fff]", clean):
+        return clean
+    try:
+        return GoogleTranslator(source="ko", target="zh-CN").translate(clean)
+    except Exception:
+        return clean
+
+
 def translate_zh_to_ko(text):
     if not text or text.strip() == "":
         return ""
@@ -113,12 +104,7 @@ def translate_zh_to_ko(text):
             text[:600]
         )
     except Exception:
-        try:
-            return MyMemoryTranslator(source="zh-CN", target="ko-KR").translate(
-                text[:300]
-            )
-        except Exception:
-            return text
+        return text
 
 
 def clean_social_url(raw_input):
@@ -147,15 +133,24 @@ def clean_social_url(raw_input):
 
 
 # ==========================================
-# 2. RedNote / Douyin / SNS 전용 다운로더 (검색 URL 방어 탑재)
+# 2. 비디오 다운로더 (사진 게시물 필터링 및 예외 처리 강화)
 # ==========================================
 def download_single_video(url):
-    # 검색 페이지 주소 필터링
     if "search_result" in url or "search/" in url:
         raise Exception(
-            "입력하신 주소는 '검색 결과 목록' 링크입니다. 영상 1개를 클릭해서 열린"
-            " '개별 영상 링크'를 복사해서 넣어주세요!"
+            "입력하신 링크는 '검색 결과 목록' 링크입니다. 개별 영상의 공유 링크를"
+            " 넣어주세요."
         )
+
+    # 직접 테스트용 샘플 MP4 직통 다운로드
+    if url.startswith("http") and url.endswith(".mp4"):
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            return {
+                "video": r.content,
+                "title": "테스트 샘플 영상",
+                "desc": "샘플 영상입니다.",
+            }
 
     session = requests.Session()
     headers = {
@@ -166,7 +161,7 @@ def download_single_video(url):
         "Accept-Language": "zh-CN,zh;q=0.9,ko-KR;q=0.8,ko;q=0.7",
     }
 
-    # 샤오홍슈/RedNote 직접 추출
+    # 샤오홍슈/RedNote 파싱
     if "xiaohongshu.com" in url or "rednote" in url:
         try:
             res = session.get(url, headers=headers, timeout=10)
@@ -177,9 +172,16 @@ def download_single_video(url):
                 state_data = json.loads(json_match.group(1))
                 note_dict = state_data.get("note", {}).get("noteDetailMap", {})
                 first_note = next(iter(note_dict.values())).get("note", {})
+
+                # 사진(카드뉴스) 게시물 감지 시 명확한 에러 반환
+                if first_note.get("type") == "normal":
+                    raise Exception(
+                        "해당 링크는 [동영상이 아닌 사진(카드뉴스)] 게시물입니다."
+                        " 영상 게시물 링크를 넣어주세요."
+                    )
+
                 title = first_note.get("title", "")
                 desc = first_note.get("desc", "")
-
                 v_stream = (
                     first_note.get("video", {})
                     .get("media", {})
@@ -189,6 +191,7 @@ def download_single_video(url):
                     v_stream.get("h264", [{}])[0].get("masterUrl")
                     or v_stream.get("h265", [{}])[0].get("masterUrl")
                 )
+
                 if v_url:
                     v_res = session.get(v_url, timeout=20)
                     if v_res.status_code == 200:
@@ -197,10 +200,11 @@ def download_single_video(url):
                             "title": title or "RedNote 제품 영상",
                             "desc": desc,
                         }
-        except Exception:
-            pass
+        except Exception as e:
+            if "사진" in str(e):
+                raise e
 
-    # 도우인 / 틱톡 / 유튜브 등 범용 추출
+    # 도우인 및 기타 SNS 다운로드 (yt-dlp)
     temp_dir = tempfile.mkdtemp()
     ydl_opts = {
         "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
@@ -211,27 +215,30 @@ def download_single_video(url):
         "http_headers": headers,
     }
 
-    if "youtube.com" in url or "youtu.be" in url:
-        ydl_opts["extractor_args"] = {
-            "youtube": {"player_client": ["android", "ios", "tv_embedded"]}
-        }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get("title", "제품 영상")
+            desc = info.get("description", "")
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        title = info.get("title", "제품 영상")
-        desc = info.get("description", "")
+        for f in glob.glob(os.path.join(temp_dir, "*")):
+            if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm")):
+                with open(f, "rb") as fp:
+                    content = fp.read()
+                return {"video": content, "title": title, "desc": desc}
+    except Exception as e:
+        if "No video formats found" in str(e):
+            raise Exception(
+                "해당 링크에 영상 스트림이 없습니다. (사진 전용 게시물이거나 플랫폼"
+                " 보안 차단)"
+            )
+        raise e
 
-    for f in glob.glob(os.path.join(temp_dir, "*")):
-        if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm")):
-            with open(f, "rb") as fp:
-                content = fp.read()
-            return {"video": content, "title": title, "desc": desc}
-
-    raise Exception("영상을 다운로드할 수 없습니다. 링크를 확인하세요.")
+    raise Exception("영상 스트림을 가져오지 못했습니다. 링크를 확인해 주세요.")
 
 
 # ==========================================
-# 3. FFmpeg 정밀 영상 처리 (자막 블러 & Concat)
+# 3. FFmpeg 정밀 처리 엔진
 # ==========================================
 def process_video_custom(video_bytes, hflip, speed, mute, blur_pos):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as in_f:
@@ -314,7 +321,7 @@ def stitch_mashup_videos(video_bytes_list, clip_sec=3.5, hflip=True, speed=1.1):
             "ffmpeg",
             "-y",
             "-ss",
-            "1.5",
+            "1.0",
             "-t",
             str(clip_sec),
             "-i",
@@ -381,7 +388,7 @@ def stitch_mashup_videos(video_bytes_list, clip_sec=3.5, hflip=True, speed=1.1):
 
 
 # ==========================================
-# 4. 실전 쇼핑 판매 대본 생성기
+# 4. 실전 판매 대본 생성기
 # ==========================================
 def generate_rich_selling_scripts(kor_title, kor_desc):
     clean_kw = re.sub(r"[^\w\s]", "", kor_title).strip()
@@ -435,57 +442,7 @@ def generate_rich_selling_scripts(kor_title, kor_desc):
 
 
 # ==========================================
-# 5. 실시간 중국 바이럴 소싱 추천 아이템 목록
-# ==========================================
-@st.cache_data(ttl=3600)
-def get_trending_china_products():
-    return [
-        {
-            "name": "전동 회전 틈새 청소솔",
-            "zh": "电动缝隙刷",
-            "point": "월 판매 10만건 돌파 / 타일·창틀 찌든때 쾌감 회전",
-            "sub_searches": [
-                ("무자막 쾌감 시연", "电动缝隙刷 沉浸式 无字"),
-                ("언박싱 & 헤드 교체", "电动缝隙刷 开箱 刷头"),
-                ("화장실 줄눈 비포애프터", "电动缝隙刷 浴室清洁对比"),
-                ("창문 틈새 먼지 세척", "电动缝隙刷 窗户槽清洁"),
-            ],
-        },
-        {
-            "name": "정량 토출 0.5g 원터치 양념통",
-            "zh": "定量调料罐",
-            "point": "건강/식단 바이럴 / 누르면 정확히 0.5g 토출",
-            "sub_searches": [
-                ("무자막 토출 쾌감", "定量调料罐 按压出盐 无字"),
-                ("밀폐 방습 구조 분해", "定量调料瓶 密封防潮"),
-                ("요리 중 한 손 조작", "按压控盐罐 做饭实测"),
-            ],
-        },
-        {
-            "name": "원터치 팝업 실리콘 얼음틀",
-            "zh": "按压制冰盒",
-            "point": "홈카페 필수템 / 버튼 누르면 얼음 전량 낙하",
-            "sub_searches": [
-                ("무자막 얼음 낙하", "按压制冰盒 解压落冰 无字"),
-                ("아이스 커피 제조", "制冰盒 冰美式 沉浸式"),
-                ("실리콘 복원력 테스트", "按压冰格 硅胶软底"),
-            ],
-        },
-        {
-            "name": "3cm 납작 접이식 빨래바구니",
-            "zh": "折叠脏衣篮",
-            "point": "원룸 자취방 필수템 / 세탁기 틈새 숨김 보관",
-            "sub_searches": [
-                ("무자막 틈새 수납", "折叠脏衣篮 夹缝收纳 无字"),
-                ("벽걸이 거치 & 대용량", "壁挂脏衣篓 大容量"),
-                ("손잡이 휴대 시연", "手提脏衣篮 独居好物"),
-            ],
-        },
-    ]
-
-
-# ==========================================
-# UI 헤더
+# UI 헤더 & 사이드바
 # ==========================================
 st.markdown(
     '<div class="seller-title">🛒 SNS 쇼핑 셀러 스튜디오</div>',
@@ -497,83 +454,53 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# 사이드바
 with st.sidebar:
     st.markdown("### 🔍 1. 키워드 직접 검색")
-    st.caption("궁금한 제품명을 한글로 치면 중국 검색창이 열립니다.")
+    st.caption("한글 또는 중국어를 입력하면 현지 검색창으로 열립니다.")
 
     search_kw = st.text_input(
-        "소싱할 제품명",
-        placeholder="예: 틈새 청소솔, 자취방 조명",
+        "검색어 입력",
+        placeholder="예: 틈새 청소솔 또는 电动缝隙刷",
         key="custom_search_kw",
     )
     if search_kw.strip():
-        try:
-            zh_kw = GoogleTranslator(source="ko", target="zh-CN").translate(
-                search_kw
+        final_query = get_clean_search_query(search_kw)
+        st.success(f"검색 쿼리: **{final_query}**")
+        c_s1, c_s2 = st.columns(2)
+        with c_s1:
+            st.link_button(
+                "📕 RedNote",
+                f"https://www.rednote.com/search_result?keyword={quote(final_query + ' 沉浸式')}",
+                use_container_width=True,
             )
-            st.success(f"중국어: **{zh_kw}**")
-            c_s1, c_s2 = st.columns(2)
-            with c_s1:
-                st.link_button(
-                    "📕 RedNote",
-                    f"https://www.rednote.com/search_result?keyword={quote(zh_kw + ' 沉浸式')}",
-                    use_container_width=True,
-                )
-            with c_s2:
-                st.link_button(
-                    "🎵 Douyin",
-                    f"https://www.douyin.com/search/{quote(zh_kw)}",
-                    use_container_width=True,
-                )
-        except Exception:
-            pass
+        with c_s2:
+            st.link_button(
+                "🎵 Douyin",
+                f"https://www.douyin.com/search/{quote(final_query)}",
+                use_container_width=True,
+            )
 
     st.markdown("---")
-    st.markdown("### 🔥 2. 실시간 중국 바이럴 소싱 추천")
-    st.caption("클릭하면 해당 앵글의 현지 영상 목록으로 바로 이동합니다.")
-
-    trending_items = get_trending_china_products()
-
-    for p_idx, prod in enumerate(trending_items):
-        with st.expander(
-            f"📦 #{p_idx+1} {prod['name']}", expanded=(p_idx == 0)
-        ):
-            st.caption(f"💡 {prod['point']}")
-
-            for s_name, s_query in prod["sub_searches"]:
-                st.markdown(f"• **{s_name}**")
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.link_button(
-                        "📕 RedNote 열기",
-                        f"https://www.rednote.com/search_result?keyword={quote(s_query)}",
-                        use_container_width=True,
-                    )
-                with c2:
-                    st.link_button(
-                        "🎵 Douyin 열기",
-                        f"https://www.douyin.com/search/{quote(s_query)}",
-                        use_container_width=True,
-                    )
-
-    st.markdown("---")
-    st.markdown("##### 🧪 기능 확인용 원클릭 테스트")
-    st.caption("링크를 직접 찾기 번거로우실 때 눌러서 짜깁기 엔진을 바로 테스트해보세요.")
-    if st.button("🚀 샘플 영상으로 짜깁기 즉시 테스트", use_container_width=True):
+    st.markdown("### 🧪 2. 기능 테스트용 샘플")
+    st.caption("실제 작동 여부를 즉시 확인하는 검증용 샘플입니다.")
+    if st.button("🚀 샘플 영상 2개로 짜깁기 테스트", use_container_width=True):
         st.session_state["mode_choice"] = (
             "🧩 [모드 2] 동일 제품 3~4개 교차 짜깁기 (매시업 스튜디오)"
         )
-        st.session_state["mu1"] = "https://www.tiktok.com/@test/video/1"
-        st.session_state["mu2"] = "https://www.tiktok.com/@test/video/2"
+        st.session_state["mu1"] = (
+            "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4"
+        )
+        st.session_state["mu2"] = (
+            "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4"
+        )
         st.rerun()
 
 
-# 메인 작업 모드 선택
+# 메인 모드 선택
 mode_selection = st.radio(
     "작업 모드 선택",
     options=[
-        "⚡ [모드 1] 단일 영상 정밀 세탁 & 대본",
+        "⚡ [모드 1] 단일 영상 세탁 & 대본",
         "🧩 [모드 2] 동일 제품 3~4개 교차 짜깁기 (매시업 스튜디오)",
     ],
     key="mode_choice",
@@ -584,7 +511,7 @@ mode_selection = st.radio(
 # ==========================================
 # 모드 1: 단일 영상 세탁 & 대본
 # ==========================================
-if mode_selection == "⚡ [모드 1] 단일 영상 정밀 세탁 & 대본":
+if mode_selection == "⚡ [모드 1] 단일 영상 세탁 & 대본":
     st.markdown("##### 1. 영상 링크 입력 (RedNote, 도우인, 틱톡, 릴스)")
     c_in1, c_in2 = st.columns([4, 1])
     with c_in1:
@@ -682,10 +609,6 @@ if mode_selection == "⚡ [모드 1] 단일 영상 정밀 세탁 & 대본":
 
         st.markdown("---")
         st.markdown("#### ✍️ 영상 맞춤 4대 플랫폼 판매 대본 (원클릭 복사)")
-        st.caption(
-            "다운받은 영상의 실제 내용을 분석하여 판매 전환율을 극대화한 실전 대본입니다."
-        )
-
         scripts = generate_rich_selling_scripts(sd["title"], sd["desc"])
         tab_sc1, tab_sc2, tab_sc3, tab_sc4 = st.tabs([
             "🧵 스레드 (댓글/링크 유도)",
@@ -705,36 +628,18 @@ if mode_selection == "⚡ [모드 1] 단일 영상 정밀 세탁 & 대본":
 
 
 # ==========================================
-# 모드 2: 동일 제품 3~4개 교차 짜깁기 (매시업 스튜디오)
+# 모드 2: 동일 제품 3~4개 교차 짜깁기 (링크 & 파일 직접 업로드 듀얼 지원)
 # ==========================================
 else:
     st.markdown("##### 🧩 동일 제품 영상 3~4개 교차 편집기")
     st.caption(
-        "동일 제품의 다른 앵글 개별 영상 링크(discovery/item/... 또는 xhslink.com)를"
-        " 넣으면, 각 영상에서 3~4초씩 추출해 1080x1920 세로형 완제품 쇼핑 영상으로 결합합니다."
+        "각 영상에서 3~4초씩 추출해 1080x1920 세로형 완제품 쇼핑 영상으로 결합합니다."
     )
 
-    m_url1 = st.text_input(
-        "🔗 제품 영상 링크 1 (메인 시연)",
-        value=st.session_state["mu1"],
-        key="mu1",
-        placeholder="예: https://www.rednote.com/discovery/item/...",
-    )
-    m_url2 = st.text_input(
-        "🔗 제품 영상 링크 2 (디테일/언박싱)",
-        value=st.session_state["mu2"],
-        key="mu2",
-        placeholder="예: http://xhslink.com/a/...",
-    )
-    m_url3 = st.text_input(
-        "🔗 제품 영상 링크 3 (비포/애프터, 선택사항)",
-        value=st.session_state["mu3"],
-        key="mu3",
-    )
-    m_url4 = st.text_input(
-        "🔗 제품 영상 링크 4 (추가 앵글, 선택사항)",
-        value=st.session_state["mu4"],
-        key="mu4",
+    input_way = st.radio(
+        "입력 방식 선택",
+        ["🔗 영상 링크로 입력", "📁 내 PC 영상 파일(MP4) 직접 드래그 업로드"],
+        horizontal=True,
     )
 
     c_mopt1, c_mopt2 = st.columns(2)
@@ -753,38 +658,101 @@ else:
             type="primary",
         )
 
-    if mashup_btn:
-        urls = [u.strip() for u in [m_url1, m_url2, m_url3, m_url4] if u.strip()]
-        if len(urls) < 2:
-            st.warning("짜깁기 편집을 위해 최소 2개 이상의 영상 링크를 입력해 주세요.")
-        else:
-            with st.spinner(
-                f"{len(urls)}개 영상 다운로드 및 1080x1920 규격 교차 편집 중..."
-            ):
-                try:
-                    video_list = []
-                    titles = []
-                    for single_u in urls:
-                        pkg = download_single_video(clean_social_url(single_u))
-                        video_list.append(pkg["video"])
-                        titles.append(pkg["title"])
+    # 1) 링크 입력 방식
+    if input_way == "🔗 영상 링크로 입력":
+        m_url1 = st.text_input(
+            "🔗 제품 영상 링크 1",
+            value=st.session_state["mu1"],
+            key="mu1",
+            placeholder="영상 링크 붙여넣기",
+        )
+        m_url2 = st.text_input(
+            "🔗 제품 영상 링크 2",
+            value=st.session_state["mu2"],
+            key="mu2",
+            placeholder="영상 링크 붙여넣기",
+        )
+        m_url3 = st.text_input(
+            "🔗 제품 영상 링크 3 (선택)",
+            value=st.session_state["mu3"],
+            key="mu3",
+        )
+        m_url4 = st.text_input(
+            "🔗 제품 영상 링크 4 (선택)",
+            value=st.session_state["mu4"],
+            key="mu4",
+        )
 
-                    stitched_bytes = stitch_mashup_videos(
-                        video_list, clip_sec=clip_duration, hflip=True, speed=1.1
-                    )
+        if mashup_btn:
+            urls = [
+                u.strip() for u in [m_url1, m_url2, m_url3, m_url4] if u.strip()
+            ]
+            if len(urls) < 2:
+                st.warning("최소 2개 이상의 영상 링크를 입력해 주세요.")
+            else:
+                with st.spinner(f"{len(urls)}개 영상 다운로드 및 교차 편집 중..."):
+                    try:
+                        video_list = []
+                        titles = []
+                        for single_u in urls:
+                            pkg = download_single_video(
+                                clean_social_url(single_u)
+                            )
+                            video_list.append(pkg["video"])
+                            titles.append(pkg["title"])
 
-                    if stitched_bytes:
-                        main_kor_title = translate_zh_to_ko(titles[0])
-                        st.session_state["mashup_data"] = {
-                            "video": stitched_bytes,
-                            "title": main_kor_title,
-                            "count": len(urls),
-                        }
-                        st.success("✅ 교차 짜깁기 완료! 저작권에 100% 안전한 새 영상이 생성되었습니다.")
-                    else:
-                        st.error("영상 결합 중 오류가 발생했습니다.")
-                except Exception as err:
-                    st.error(f"짜깁기 실패: {err}")
+                        stitched_bytes = stitch_mashup_videos(
+                            video_list,
+                            clip_sec=clip_duration,
+                            hflip=True,
+                            speed=1.1,
+                        )
+                        if stitched_bytes:
+                            st.session_state["mashup_data"] = {
+                                "video": stitched_bytes,
+                                "title": translate_zh_to_ko(titles[0]),
+                                "count": len(urls),
+                            }
+                            st.success("✅ 교차 짜깁기 완료!")
+                        else:
+                            st.error("영상 결합 중 오류가 발생했습니다.")
+                    except Exception as err:
+                        st.error(f"짜깁기 실패: {err}")
+
+    # 2) 파일 직접 업로드 방식 (차단 없는 가장 안전한 방식)
+    else:
+        uploaded_files = st.file_uploader(
+            "내 PC의 영상 파일 2~4개 선택 (MP4)",
+            type=["mp4", "mov"],
+            accept_multiple_files=True,
+        )
+        if mashup_btn:
+            if not uploaded_files or len(uploaded_files) < 2:
+                st.warning("최소 2개 이상의 MP4 영상 파일을 업로드해 주세요.")
+            else:
+                with st.spinner(
+                    f"{len(uploaded_files)}개 파일 컷편집 및 1080x1920 세로형 결합"
+                    " 중..."
+                ):
+                    try:
+                        video_list = [f.read() for f in uploaded_files[:4]]
+                        stitched_bytes = stitch_mashup_videos(
+                            video_list,
+                            clip_sec=clip_duration,
+                            hflip=True,
+                            speed=1.1,
+                        )
+                        if stitched_bytes:
+                            st.session_state["mashup_data"] = {
+                                "video": stitched_bytes,
+                                "title": "교차 짜깁기 완성 숏폼",
+                                "count": len(video_list),
+                            }
+                            st.success("✅ 교차 짜깁기 완료!")
+                        else:
+                            st.error("영상 결합 중 오류가 발생했습니다.")
+                    except Exception as err:
+                        st.error(f"짜깁기 실패: {err}")
 
     if st.session_state.get("mashup_data"):
         md = st.session_state["mashup_data"]
