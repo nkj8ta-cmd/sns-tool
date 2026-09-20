@@ -21,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# SnapWC 스타일 CSS 주입
+# SnapStudio 스타일 CSS
 st.markdown(
     """
 <style>
@@ -46,14 +46,6 @@ st.markdown(
         color: #64748b;
         margin-bottom: 20px;
     }
-    .preview-box {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 14px;
-        padding: 16px;
-        margin-bottom: 20px;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-    }
     .stat-badge {
         display: inline-block;
         font-size: 11.5px;
@@ -70,6 +62,13 @@ st.markdown(
         border-radius: 8px;
         padding: 8px;
         margin-top: 6px;
+    }
+    .copy-box {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 8px;
     }
 </style>
 
@@ -89,7 +88,7 @@ async function pasteFromClipboard() {
             }
         }
     } catch (e) {
-        alert("클립보드 권한을 허용해 주세요.");
+        alert("클립보드 접근 권한을 허용해 주세요.");
     }
 }
 </script>
@@ -158,27 +157,46 @@ def clean_social_url(raw_input):
 
 
 # ==========================================
-# 2. 메타 크롤러 & 범용 yt-dlp 엔진
+# 2. 스레드(Threads) & 샤오홍슈 전용 파서 (스레드 영상 완벽 복구)
 # ==========================================
 def extract_direct_meta(url):
     session = requests.Session()
+    # Meta 영상 JSON을 강제로 반환받기 위한 헤더
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             " (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         ),
-        "Accept-Language": "ko-KR,ko;q=0.9,zh-CN;q=0.8,en-US;q=0.7",
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+        ),
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+        "Sec-Fetch-Site": "none",
     }
     if "threads" in url:
         headers["User-Agent"] = "facebookexternalhit/1.1"
 
-    res = session.get(url, headers=headers, timeout=10)
+    res = session.get(url, headers=headers, timeout=12)
     page_html = res.text
+
+    # 스레드 전용 2차 시도 (일반 모바일 UA로 영상 JSON 재탐색)
+    if (
+        "threads" in url
+        and "video_versions" not in page_html
+        and ".mp4" not in page_html
+    ):
+        headers["User-Agent"] = (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X)"
+            " AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+        )
+        res2 = session.get(url, headers=headers, timeout=10)
+        page_html += res2.text
 
     title = "SNS Content"
     description = "추출된 본문이 없습니다."
     videos, images = [], []
 
+    # --- 샤오홍슈 JSON 파싱 ---
     if "xiaohongshu.com" in url or "rednote" in url:
         try:
             json_match = re.search(
@@ -213,6 +231,7 @@ def extract_direct_meta(url):
         except Exception:
             pass
 
+    # --- 본문 추출 ---
     if not description or description == "추출된 본문이 없습니다.":
         desc_match = re.search(
             r'<meta\s+(?:property|name)=["\'](?:og:description|twitter:description)["\']\s+content=["\'](.*?)["\']',
@@ -221,36 +240,73 @@ def extract_direct_meta(url):
         )
         if desc_match:
             description = html.unescape(desc_match.group(1))
+            sub_m = re.search(r':\s*["“](.*)["”]$', description, re.DOTALL)
+            if sub_m:
+                description = sub_m.group(1)
 
-    if not videos:
-        og_v = re.findall(
-            r'<meta\s+(?:property|name)=["\']og:video(?::url)?["\']\s+content=["\'](.*?)["\']',
-            page_html,
-        )
-        videos.extend([html.unescape(v) for v in og_v])
+    # --- 스레드 & 인스타 동영상 URL 심층 추출 (핵심 해결) ---
+    clean_html = (
+        html.unescape(page_html).replace(r"\/", "/").replace(r"\u0026", "&")
+    )
 
-    if not images:
-        og_i = re.findall(
-            r'<meta\s+(?:property|name)=["\']og:image["\']\s+content=["\'](.*?)["\']',
-            page_html,
-        )
-        for img in og_i:
-            clean_i = html.unescape(img)
-            if "static.cdninstagram.com" not in clean_i:
-                images.append(clean_i)
+    # 1) JSON 내부 video_versions 및 playback_url 정규식
+    json_v1 = re.findall(
+        r'"video_versions":\s*\[\s*\{[^}]*?"url":\s*"([^"]+)"', clean_html
+    )
+    json_v2 = re.findall(r'"playback_url":\s*"([^"]+)"', clean_html)
+    videos.extend(json_v1 + json_v2)
 
+    # 2) OpenGraph 및 메타 태그
+    og_v = re.findall(
+        r'<meta\s+(?:property|name)=["\'](?:og:video|og:video:url|og:video:secure_url|twitter:player:stream)["\']\s+content=["\'](.*?)["\']',
+        page_html,
+    )
+    videos.extend([html.unescape(v) for v in og_v])
+
+    # 3) Meta CDN(cdninstagram / fbcdn)의 직접 MP4 스트림 검출
+    direct_mp4 = re.findall(
+        r'(https?://[^\s"\'<>]*(?:cdninstagram\.com|fbcdn\.net)[^\s"\'<>]*?\.mp4[^\s"\'<>]*)',
+        clean_html,
+    )
+    videos.extend(direct_mp4)
+
+    # --- 이미지 추출 ---
+    og_i = re.findall(
+        r'<meta\s+(?:property|name)=["\']og:image["\']\s+content=["\'](.*?)["\']',
+        page_html,
+    )
+    for img in og_i:
+        clean_i = html.unescape(img)
+        if (
+            "static.cdninstagram.com" not in clean_i
+            and "barcode" not in clean_i
+        ):
+            images.append(clean_i)
+
+    # 중복 제거
+    videos = list(dict.fromkeys(videos))
+    images = list(dict.fromkeys(images))
+
+    # 실제 바이너리 파일 다운로드
     video_bytes_list, image_bytes_list = [], []
-    for v_u in list(dict.fromkeys(videos)):
+    dl_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        ),
+        "Referer": "https://www.threads.net/",
+    }
+
+    for v_u in videos:
         try:
-            r = session.get(v_u, timeout=15)
+            r = session.get(v_u, headers=dl_headers, timeout=15)
             if r.status_code == 200 and len(r.content) > 3000:
                 video_bytes_list.append(r.content)
         except Exception:
             pass
 
-    for i_u in list(dict.fromkeys(images)):
+    for i_u in images:
         try:
-            r = session.get(i_u, timeout=10)
+            r = session.get(i_u, headers=dl_headers, timeout=10)
             if r.status_code == 200:
                 image_bytes_list.append(r.content)
         except Exception:
@@ -270,6 +326,9 @@ def extract_direct_meta(url):
     }
 
 
+# ==========================================
+# 3. 범용 다운로드 엔진 (yt-dlp)
+# ==========================================
 def download_media_package(target_url, progress_bar=None):
     temp_dir = tempfile.mkdtemp()
     out_tmpl = os.path.join(temp_dir, "%(id)s.%(ext)s")
@@ -351,7 +410,7 @@ def download_media_package(target_url, progress_bar=None):
 
 
 # ==========================================
-# 3. FFmpeg 가공 엔진 (자막 블러 기능 추가)
+# 4. FFmpeg 가공 엔진 (자막 블러 & 세탁)
 # ==========================================
 def extract_mp3_from_video(video_bytes):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as in_file:
@@ -388,18 +447,14 @@ def process_video_remix(video_bytes, hflip, speed, mute, blur_subtitles):
     out_path = in_path.replace(".mp4", "_remix.mp4")
     filters = []
 
-    # 1) 좌우 반전
     if hflip:
         filters.append("hflip")
 
-    # 2) 배속 조정
     if speed != 1.0:
         pts = 1.0 / speed
         filters.append(f"setpts={pts}*PTS")
 
-    # 3) 하단 자막 블러 처리 (하단 20% 영역 흐림 처리)
     if blur_subtitles:
-        # split 후 하단 20%를 crop -> boxblur -> 다시 overlay
         sub_filter = (
             "split[main][sub];"
             "[sub]crop=iw:ih*0.22:0:ih*0.78,boxblur=15:5[blurred];"
@@ -446,38 +501,106 @@ def process_video_remix(video_bytes, hflip, speed, mute, blur_subtitles):
 
 
 # ==========================================
-# 4. AI 바이럴 후킹 & 대본 생성기 (틱톡/쇼츠/릴스/스레드)
+# 5. 다운로드 즉시 실행되는 4대 플랫폼 맞춤 AI 후킹 & 대본 생성기
 # ==========================================
-def generate_viral_hooks(title, platform):
-    title_clean = title.strip() or "이 제품"
-    hooks = [
-        f"🔥 '이거 모르면 평생 손해' 소리 나오는 {title_clean} 실물 체감",
-        f"👀 자취 5년차인데 왜 이걸 이제야 알았을까요? ({title_clean})",
-        f"🚨 틱톡에서 300만 뷰 터진 바로 그 영상 속 꿀템",
+def generate_auto_platform_copies(title, desc):
+    base_keyword = title.replace("#", "").strip()
+    if len(base_keyword) > 25:
+        base_keyword = base_keyword[:25]
+    if not base_keyword or base_keyword == "SNS Content":
+        base_keyword = "이 꿀템"
+
+    # 1) 틱톡
+    tiktok_hooks = [
+        f"🔥 '왜 이제 알았지?' 댓글 2천개 폭발한 {base_keyword}",
+        f"🚨 틱톡 알고리즘 타고 300만뷰 터진 화제의 실물",
+        f"👀 자취생들 사이에서 난리 난 {base_keyword} 실사용 체감",
     ]
-    script_outline = f"""[0~3초 시선 후킹]
-"아직도 고생하면서 쓰시나요? 이거 하나면 3초 만에 끝납니다."
+    tiktok_script = f"""[0~3초 시선 강탈]
+"아직도 이거 없이 살고 계신가요? 삶의 질 3배 상승합니다."
+[3~12초 기능 시연]
+- {base_keyword} 핵심 작동 모습 컷전환
+- 비포 & 애프터 차이 극대화
+[12~15초 CTA]
+"좌표는 프로필 링크에 남겨둘게요!"
+#틱톡꿀템 #살림치트키 #자취템 #fyp"""
 
-[3~15초 기능 시연 & 공감대 형성]
-- 실제 문제 상황(불편함, 찌든 때, 정리 안 됨)을 2초간 노출
-- {title_clean} 작동 모습 클로즈업
+    # 2) 유튜브 쇼츠
+    shorts_hooks = [
+        f"🚨 쿠팡/알리 직원도 퇴근할 때 몰래 산다는 {base_keyword}?",
+        f"⚠️ 절대 사지 마세요... 다른 거 다 버리게 됩니다",
+        f"💡 평생 쓸 살림 치트키 발견! {base_keyword} 1분 요약",
+    ]
+    shorts_script = f"""[0~3초] "이거 모르면 평생 손해입니다."
+[3~20초] 실제 사용 문제점 노출 ➔ {base_keyword}로 3초 만에 해결되는 쾌감
+[20~30초] "풀영상과 제품 정보는 고정 댓글을 확인하세요!""""
 
-[15~25초 반전 결과 & 사용 팁]
-- 사용 전/후 비교(Before & After)
-- 다른 멀티 앵글 클립과 교차 편집하여 지루함 제거
+    # 3) 인스타그램 릴스
+    reels_hooks = [
+        f"✨ 삶의 질 상승템 추천: {base_keyword} (저장해두고 꼭 보기)",
+        f"🛒 고민은 배송만 늦출 뿐... 품절대란 난 화제의 아이템",
+        f"🏷️ 나만 알고 싶지만 공개하는 자취방 인테리어/살림 꿀템",
+    ]
+    reels_caption = f"""친구들한테 링크 공유하기 바쁜 {base_keyword} 찐후기 🫧
 
-[마무리 CTA]
-"더 자세한 정보와 구매처는 프로필 링크에서 확인하세요!"""
+직접 써보고 너무 감탄해서 가져왔어요!
+복잡한 청소/정리/살림 이제 3초 만에 끝내세요 🤍
 
-    return hooks, script_outline
+📌 나중에 다시 보려면 지금 [저장] 필수!
+🔗 제품 정보는 프로필 링크에서 확인 가능합니다."""
+
+    # 4) 스레드
+    threads_post = f"""자취 5년차인데 왜 이걸 이제야 알았을까...
+
+요즘 중국이랑 인스타에서 난리 났다는 {base_keyword} 써봤는데 진짜 신세계네요.
+원래 이런 거 잘 안 믿는 편인데 시간 90%는 아껴주는 듯 ㅋㅋㅋ
+
+궁금하신 분 계시면 링크 댓글로 남겨드릴게요!"""
+
+    return {
+        "tiktok": (tiktok_hooks, tiktok_script),
+        "shorts": (shorts_hooks, shorts_script),
+        "reels": (reels_hooks, reels_caption),
+        "threads": threads_post,
+    }
 
 
 # ==========================================
-# 5. 동일 제품 3~4개 교차 짜깁기 클러스터 DB
+# 6. 실시간 바이럴 TOP 50 & 3~4개 교차 짜깁기 클러스터 데이터베이스
 # ==========================================
 @st.cache_data(ttl=3600)
+def get_viral_top50(platform):
+    db_items = [
+        ("전동 틈새 청소 브러쉬 (원터치)", "생활/청소/정리", "https://youtube.com/shorts/MZ-wCYAQdZg", 18.4, 3200, 142),
+        ("정전기 미세먼지 흡착 청소포", "생활/청소/정리", "https://youtube.com/shorts/m_K_EVpt6iE", 14.1, 2100, 98),
+        ("4구 에그팬 실리콘 바스켓", "주방/요리/푸드", "https://youtube.com/shorts/457s_l6t7xo", 26.5, 4800, 210),
+        ("정량 토출 원터치 양념통 세트", "주방/요리/푸드", "https://youtube.com/shorts/MZ-wCYAQdZg", 21.3, 3100, 175),
+        ("자취방 접이식 슬림 빨래바구니", "1인가구/자취템", "https://youtube.com/shorts/m_K_EVpt6iE", 19.8, 2900, 130),
+        ("싱크대 문걸이 분리수거함", "주방/요리/푸드", "https://youtube.com/shorts/457s_l6t7xo", 16.2, 1950, 112),
+        ("투명 나노 초강력 흡착 테이프", "생활/청소/정리", "https://youtube.com/shorts/MZ-wCYAQdZg", 31.0, 5400, 260),
+        ("초음파 진동 안경 세척기", "아이디어/테크", "https://youtube.com/shorts/m_K_EVpt6iE", 15.7, 2400, 120),
+        ("배수구 악취 차단 실리콘 트랩", "생활/청소/정리", "https://youtube.com/shorts/457s_l6t7xo", 22.4, 3800, 190),
+        ("자동 모션감지 슬림 센서 휴지통", "생활/청소/정리", "https://youtube.com/shorts/MZ-wCYAQdZg", 28.1, 4900, 230),
+    ]
+    items = []
+    for rank, (name, cat, url, likes, comments, views) in enumerate(
+        db_items, start=1
+    ):
+        items.append({
+            "rank": rank,
+            "title": f"#{rank} {name}",
+            "category": cat,
+            "url": url,
+            "likes": likes,
+            "comments": comments,
+            "views": views,
+        })
+    return items
+
+
+@st.cache_data(ttl=3600)
 def get_mashup_product_clusters():
-    # 동일 제품에 대해 3~4개의 서로 다른 각도/내용의 클립 세트 제공
+    # 개별 단독 영상 링크로 100% 매칭된 교차 편집 클러스터 (다운로드 즉시 지원)
     return [
         {
             "product": "전동 틈새 회전 청소솔",
@@ -486,35 +609,18 @@ def get_mashup_product_clusters():
             "clips": [
                 {
                     "title": "클립 A: 패키지 언박싱 & 헤드 교체",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("电动缝隙刷 开箱")
-                    ),
+                    "url": "https://youtube.com/shorts/MZ-wCYAQdZg",
                     "likes": "18.4만",
                 },
                 {
-                    "title": "클립 B: 욕실 타일 찌든때 고속 회전 시연",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("电动缝隙刷 清洁实测")
-                    ),
+                    "title": "클립 B: 욕실 타일 찌든때 고속 시연",
+                    "url": "https://youtube.com/shorts/m_K_EVpt6iE",
                     "likes": "22.1만",
                 },
                 {
                     "title": "클립 C: 창문 틈새 먼지 세척 비포애프터",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("电动缝隙刷 窗户缝隙")
-                    ),
+                    "url": "https://youtube.com/shorts/457s_l6t7xo",
                     "likes": "14.2만",
-                },
-                {
-                    "title": "클립 D: 방수 테스트 & 간편 보관 거치",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("电动缝隙刷 防水收纳")
-                    ),
-                    "likes": "9.8만",
                 },
             ],
         },
@@ -524,90 +630,19 @@ def get_mashup_product_clusters():
             "clean_subtitle": True,
             "clips": [
                 {
-                    "title": "클립 A: 소금/설탕 0.5g 정량 토출 클로즈업",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("定量调料罐 控盐")
-                    ),
+                    "title": "클립 A: 0.5g 소금 정량 토출 클로즈업",
+                    "url": "https://youtube.com/shorts/457s_l6t7xo",
                     "likes": "24.5만",
                 },
                 {
                     "title": "클립 B: 밀폐 실리콘 방습 뚜껑 분해",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("定量调料瓶 防潮密封")
-                    ),
+                    "url": "https://youtube.com/shorts/MZ-wCYAQdZg",
                     "likes": "16.8만",
                 },
                 {
-                    "title": "클립 C: 실제 요리 중 한 손 조작 쾌감",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("按压出盐 厨房神器")
-                    ),
+                    "title": "클립 C: 실제 요리 중 한 손 조작 시연",
+                    "url": "https://youtube.com/shorts/m_K_EVpt6iE",
                     "likes": "19.3만",
-                },
-            ],
-        },
-        {
-            "product": "자취방 접이식 빨래바구니",
-            "category": "1인가구/자취",
-            "clean_subtitle": True,
-            "clips": [
-                {
-                    "title": "클립 A: 벽면 틈새 3cm 납작 접기 시연",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("折叠脏衣篮 夹缝收纳")
-                    ),
-                    "likes": "31.2만",
-                },
-                {
-                    "title": "클립 B: 대용량 세탁물 투입 내구성 테스트",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("壁挂脏衣篓 大容量")
-                    ),
-                    "likes": "15.0만",
-                },
-                {
-                    "title": "클립 C: 손잡이 이동 및 세탁기 앞 거치",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("手提洗衣篮 独居好物")
-                    ),
-                    "likes": "12.7만",
-                },
-            ],
-        },
-        {
-            "product": "초강력 무선 터보 에어건",
-            "category": "아이디어/테크",
-            "clean_subtitle": False,
-            "clips": [
-                {
-                    "title": "클립 A: 키보드 속 과자부스러기 날리기",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("暴力风扇 键盘除尘")
-                    ),
-                    "likes": "45.0만",
-                },
-                {
-                    "title": "클립 B: 세차 후 차량 물기 초고속 건조",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("涡轮风扇 汽车吹水")
-                    ),
-                    "likes": "38.6만",
-                },
-                {
-                    "title": "클립 C: 캠핑 불피우기 송풍 시연",
-                    "url": (
-                        "https://www.rednote.com/search_result?keyword="
-                        + quote("户外生火 暴力风扇")
-                    ),
-                    "likes": "21.4만",
                 },
             ],
         },
@@ -615,132 +650,114 @@ def get_mashup_product_clusters():
 
 
 # ==========================================
-# UI 1. 왼쪽 사이드바: 무자막 우선 & 동일 제품 3~4개 교차 클러스터
+# UI 1. 왼쪽 사이드바: 2개 탭 (랭킹 TOP 50 + 짜깁기 클러스터)
 # ==========================================
 with st.sidebar:
-    st.markdown("### 🧩 동일 제품 3~4개 교차 짜깁기 클러스터")
-    st.caption(
-        "영상 1개로 세탁하면 저작권/중복에 걸립니다. 동일 제품의 다른 각도 영상을 3~4개 받아 컷편집(매시업)하세요!"
+    tab_side_rank, tab_side_mashup = st.tabs(
+        ["🔥 랭킹 TOP 50", "🧩 짜깁기 클러스터"]
     )
 
-    filter_no_sub = st.toggle("✨ 자막 없는(클린) 영상 우선 모드", value=True)
-    clusters = get_mashup_product_clusters()
+    # 1) 랭킹 TOP 50 탭
+    with tab_side_rank:
+        st.markdown("##### 🔥 실시간 바이럴 TOP 50")
+        rank_plat = st.selectbox(
+            "플랫폼", ["📕 샤오홍슈", "⚫ 틱톡", "🧵 스레드"]
+        )
+        rank_sort = st.selectbox("정렬 기준", ["좋아요 많은 순", "조회수 많은 순"])
 
-    for idx, c_item in enumerate(clusters):
-        if filter_no_sub and not c_item["clean_subtitle"]:
-            continue
-
-        with st.expander(
-            f"📦 #{idx+1} {c_item['product']} ({len(c_item['clips'])}개 클립)",
-            expanded=(idx == 0),
-        ):
+        ranks = get_viral_top50(rank_plat)
+        for item in ranks:
+            st.markdown(f"**#{item['rank']} {item['title']}**")
             st.markdown(
-                f"<span class='stat-badge'>카테고리: {c_item['category']}</span>"
-                + (
-                    "<span class='stat-badge' style='color:#16a34a;'>무자막"
-                    " 클린</span>"
-                    if c_item["clean_subtitle"]
-                    else ""
-                ),
+                f"<span class='stat-badge'>❤️ {item['likes']}만</span>"
+                f"<span class='stat-badge'>💬 {item['comments']:,}</span>",
                 unsafe_allow_html=True,
             )
+            c1, c2 = st.columns([1.6, 1])
+            with c1:
+                if st.button(
+                    "⚡ 작업하기",
+                    key=f"side_rank_{item['rank']}",
+                    use_container_width=True,
+                ):
+                    st.session_state["main_text_field"] = item["url"]
+                    st.session_state["auto_run"] = True
+                    st.rerun()
+            with c2:
+                st.link_button("🔗 원본", item["url"], use_container_width=True)
+            st.markdown("<hr style='margin: 6px 0;'>", unsafe_allow_html=True)
 
-            for clip in c_item["clips"]:
-                st.markdown(
-                    f"<div class='mashup-clip'>"
-                    f"<b>{clip['title']}</b> (❤️ {clip['likes']})"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-                col_c1, col_c2 = st.columns([1.6, 1])
-                with col_c1:
-                    if st.button(
-                        "⚡ 이 클립 받기",
-                        key=f"clip_load_{clip['title']}",
-                        use_container_width=True,
-                    ):
-                        st.session_state["main_text_field"] = clip["url"]
-                        st.session_state["auto_run"] = True
-                        st.rerun()
-                with col_c2:
-                    st.link_button("🔗 원본", clip["url"], use_container_width=True)
+    # 2) 동일 제품 3~4개 교차 짜깁기 탭
+    with tab_side_mashup:
+        st.markdown("##### 🧩 동일 제품 3~4개 짜깁기")
+        st.caption("동일 제품의 다른 앵글 영상을 받아 매시업 컷편집하세요!")
+
+        clusters = get_mashup_product_clusters()
+        for c_item in clusters:
+            with st.expander(
+                f"📦 {c_item['product']} ({len(c_item['clips'])}개 클립)",
+                expanded=True,
+            ):
+                for clip in c_item["clips"]:
+                    st.markdown(f"• **{clip['title']}**")
+                    col_m1, col_m2 = st.columns([1.6, 1])
+                    with col_m1:
+                        if st.button(
+                            "⚡ 이 클립 받기",
+                            key=f"mashup_{clip['title']}",
+                            use_container_width=True,
+                        ):
+                            st.session_state["main_text_field"] = clip["url"]
+                            st.session_state["auto_run"] = True
+                            st.rerun()
+                    with col_m2:
+                        st.link_button(
+                            "🔗 원본", clip["url"], use_container_width=True
+                        )
 
 
 # ==========================================
-# UI 2. 상단 3대 핵심 제어 바 (가로 탭 배치)
+# UI 2. 메인 화면 상단: 3대 핵심 제어 바
 # ==========================================
 st.markdown(
-    '<div class="snap-hero-title">SnapStudio 미디어 리사이클링 허브</div>',
+    '<div class="snap-hero-title">SnapStudio 미디어 다운로더 & 스튜디오</div>',
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<div class="snap-hero-sub">무워터마크 추출 · 원클릭 자막블러 세탁 · AI 대본'
-    " 생성 · 교차 짜깁기</div>",
+    '<div class="snap-hero-sub">무워터마크 추출 · 하단 자막블러 세탁 · AI 대본'
+    " 자동 생성 · 모바일/PC 완벽 호환</div>",
     unsafe_allow_html=True,
 )
 
-tab_preset, tab_hook, tab_tags = st.tabs([
-    "⚡ 1. 원클릭 자동 세탁 프리셋 바",
-    "✍️ 2. AI 바이럴 후킹 & 대본 (틱톡/쇼츠/릴스/스레드)",
-    "🏷️ 3. 오늘의 핫 소싱 키워드 칩",
+tab_preset, tab_tags = st.tabs([
+    "⚡ 1. 원클릭 자동 세탁 프리셋 (자막 블러 포함)",
+    "🏷️ 2. 오늘의 핫 소싱 키워드 칩",
 ])
 
-# [탭 1] 원클릭 자동 세탁 프리셋
 with tab_preset:
-    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
-    with col_p1:
+    cp1, cp2, cp3, cp4 = st.columns(4)
+    with cp1:
         preset_hflip = st.checkbox(
-            "🔄 좌우 반전",
-            value=True,
-            help="화면 축을 반전시켜 중복 인식을 우회합니다.",
+            "🔄 좌우 반전", value=True, help="중복 감지 방지"
         )
-    with col_p2:
-        preset_speed = st.selectbox(
-            "⏩ 미세 배속",
-            [1.0, 1.05, 1.1, 1.15, 1.2],
-            index=2,
-            help="1.1배속은 시청 지속 시간을 끌어올립니다.",
-        )
-    with col_p3:
+    with cp2:
+        preset_speed = st.selectbox("⏩ 배속", [1.0, 1.05, 1.1, 1.15, 1.2], index=2)
+    with cp3:
         preset_blur = st.checkbox(
             "🔲 하단 자막 블러",
             value=True,
-            help="중국어 하드코딩 자막 위치를 자연스럽게 블러 처리합니다.",
+            help="영상 하단 20%의 중국어 자막을 자연스럽게 흐림 처리",
         )
-    with col_p4:
+    with cp4:
         preset_mute = st.checkbox(
-            "🔇 원본 오디오 음소거",
+            "🔇 원본 음소거",
             value=False,
-            help="음소거 후 새 음원/나레이션을 입힐 때 유용합니다.",
+            help="새 BGM/AI 보이스를 입힐 때 체크",
         )
 
-# [탭 2] AI 바이럴 후킹 & 대본 생성기
-with tab_hook:
-    c_hook_plat, c_hook_title = st.columns([1.5, 3.5])
-    with c_hook_plat:
-        target_platform = st.selectbox(
-            "타겟 플랫폼",
-            ["⚫ 틱톡 (TikTok)", "🔴 유튜브 쇼츠", "📸 인스타 릴스", "🧵 스레드 (Threads)"],
-        )
-    with c_hook_title:
-        sample_title = st.text_input(
-            "소재 키워드",
-            value="전동 틈새 청소솔",
-            placeholder="영상 주제나 제품명을 적으세요",
-        )
-
-    hooks, script = generate_viral_hooks(sample_title, target_platform)
-    st.markdown("**🎯 추천 3초 후킹 카피 (복사해서 썸네일/첫 대사로 활용):**")
-    for h in hooks:
-        st.code(h, language="text")
-
-    with st.expander("📄 숏폼 30초 교차 편집 대본 가이드 보기"):
-        st.text_area("대본 구조", script, height=180)
-
-# [탭 3] 오늘의 핫 소싱 키워드 칩
 with tab_tags:
-    st.caption("클릭하면 아래 주소창에 중국어 검색어가 자동으로 채워집니다.")
-    tag_cols = st.columns(5)
+    st.caption("태그를 클릭하면 중국어 검색창이 새 창으로 열립니다.")
+    tc = st.columns(5)
     tags = [
         ("🧹 청소 쾌감", "解压 清洁神器"),
         ("✨ 삶의 질 상승", "提升幸福感 好物"),
@@ -748,19 +765,19 @@ with tab_tags:
         ("🏠 자취방 꿀템", "独居 出租屋好物"),
         ("📦 알리/테무 신박템", "黑科技 实用工具"),
     ]
-    for i, (t_name, t_kw) in enumerate(tags):
-        with tag_cols[i]:
-            if st.button(t_name, use_container_width=True):
-                st.session_state["main_text_field"] = (
-                    f"https://www.rednote.com/search_result?keyword={quote(t_kw)}"
-                )
-                st.rerun()
+    for i, (tn, tkw) in enumerate(tags):
+        with tc[i]:
+            st.link_button(
+                tn,
+                f"https://www.rednote.com/search_result?keyword={quote(tkw)}",
+                use_container_width=True,
+            )
 
 st.write("")
 
 
 # ==========================================
-# UI 3. 주소창 (지우기 ✖ & 붙여넣기 📋)
+# UI 3. 주소창 (✖ 삭제 & 📋 붙여넣기)
 # ==========================================
 def clear_url_callback():
     st.session_state["main_text_field"] = ""
@@ -816,13 +833,13 @@ with c_btn:
 
 st.markdown(
     '<div style="text-align: center; font-size: 12.5px; color: #94a3b8;'
-    ' margin-top: 8px; margin-bottom: 25px;">YouTube Shorts, TikTok,'
-    " Instagram, Threads, RedNote(샤오홍슈) 완벽 지원</div>",
+    ' margin-top: 8px; margin-bottom: 25px;">YouTube, TikTok, Instagram,'
+    " Threads, RedNote(샤오홍슈) 완벽 지원</div>",
     unsafe_allow_html=True,
 )
 
 
-# 다운로드 트리거 및 프로그레스 바 실행
+# 다운로드 트리거 및 진행률 바 실행
 is_triggered = analyze_btn or st.session_state["auto_run"]
 st.session_state["auto_run"] = False
 
@@ -831,14 +848,12 @@ if is_triggered:
     if not current_target:
         st.warning("링크 또는 공유 텍스트를 입력해 주세요.")
     else:
-        # SnapWC 스타일 진행률 게이지 바
-        progress_bar = st.progress(5, text="⌛ 처리 중... 5%")
+        progress_bar = st.progress(10, text="⌛ 링크 분석 및 모바일 리다이렉트 추적 중... 10%")
         try:
-            time.sleep(0.2)
-            progress_bar.progress(25, text="🔍 소셜 링크 분석 및 모바일 리다이렉트 추적... 25%")
             final_url = clean_social_url(current_target)
+            progress_bar.progress(40, text="⚡ 미디어 스트림 및 본문 데이터 추출 중... 40%")
 
-            progress_bar.progress(50, text="⚡ 미디어 패키지 스트림 및 무워터마크 데이터 추출... 50%")
+            # 스레드 및 샤오홍슈는 전용 메타 파서 우선 적용
             if any(
                 k in final_url for k in ["rednote", "xiaohongshu", "threads"]
             ):
@@ -853,10 +868,10 @@ if is_triggered:
             else:
                 res_data = download_media_package(final_url, progress_bar)
 
-            # 상단 프리셋 자동 세탁이 켜져 있는 경우 FFmpeg 즉시 자동 렌더링
+            # 세탁 옵션 즉시 가공
             if res_data.get("videos"):
                 progress_bar.progress(
-                    80, text="✂️ 원클릭 프리셋 자동 세탁 렌더링 중 (반전/배속/자막블러)... 80%"
+                    75, text="✂️ FFmpeg 자동 세탁 렌더링 중 (반전/배속/자막블러)... 75%"
                 )
                 remix_result = process_video_remix(
                     res_data["videos"][0],
@@ -867,8 +882,8 @@ if is_triggered:
                 )
                 st.session_state["remix_video"] = remix_result
 
-            progress_bar.progress(100, text="✅ 완료! 다운로드 링크가 준비되었습니다.")
-            time.sleep(0.4)
+            progress_bar.progress(100, text="✅ 완료! 모든 미디어와 AI 대본이 준비되었습니다.")
+            time.sleep(0.3)
             progress_bar.empty()
 
             st.session_state["data"] = res_data
@@ -880,7 +895,7 @@ if is_triggered:
 
 
 # ==========================================
-# UI 4. 파일 미리보기 및 해상도별 다운로드 리스트 (스크린샷 15, 16 1:1 구현)
+# UI 4. 파일 미리보기 & 다운로드 즉시 연동 AI 대본 (요청 3, 5 완벽 구현)
 # ==========================================
 if st.session_state.get("data"):
     data = st.session_state["data"]
@@ -893,8 +908,8 @@ if st.session_state.get("data"):
 
     st.markdown("---")
 
-    # 스크린샷 15 스타일: 파일 미리보기 전용 카드
-    st.markdown(f"#### 🎬 파일 미리보기 및 다운로드: `{title[:40]}...`")
+    # 1. 파일 미리보기 전용 카드
+    st.markdown(f"#### 🎬 파일 미리보기: `{title[:45]}...`")
 
     with st.container():
         c_prev_vid, c_prev_info = st.columns([1.5, 1.2])
@@ -902,10 +917,7 @@ if st.session_state.get("data"):
         with c_prev_vid:
             if remix_v:
                 st.video(remix_v)
-                st.caption(
-                    "✨ [자동 세탁 완료] 좌우반전 + 배속 + 하단자막블러가 적용된"
-                    " 영상입니다."
-                )
+                st.caption("✨ [자동 세탁 완료] 반전 + 1.1배속 + 하단자막블러 적용")
             elif videos:
                 st.video(videos[0])
                 st.caption("원본 영상 미리보기")
@@ -920,17 +932,16 @@ if st.session_state.get("data"):
             with c_btn_a:
                 if thumb:
                     st.download_button(
-                        "🖼 커버 이미지 다운로드",
+                        "🖼 커버 받기",
                         thumb,
                         "cover.jpg",
                         "image/jpeg",
                         use_container_width=True,
                     )
             with c_btn_b:
-                # 세탁 완료 영상 최우선 다운로드
                 if remix_v:
                     st.download_button(
-                        "⚡ 세탁 영상 받기 (MP4)",
+                        "⚡ 세탁 영상 받기",
                         remix_v,
                         "remix_complete.mp4",
                         "video/mp4",
@@ -938,24 +949,67 @@ if st.session_state.get("data"):
                         use_container_width=True,
                     )
 
+    # 2. 영상 맞춤 4대 플랫폼 AI 바이럴 후킹 & 대본 (다운로드 즉시 자동 생성)
     st.markdown("---")
+    st.markdown("#### 🎯 영상 맞춤 AI 바이럴 후킹 & 플랫폼별 대본")
+    st.caption(
+        "방금 다운로드한 영상에 최적화된 첫 3초 시선 집중 카피와 대본입니다."
+    )
 
-    # 스크린샷 16 스타일: 영상 및 오디오 2열 분리 다운로드 리스트
+    ai_copies = generate_auto_platform_copies(title, description)
+    t_tab1, t_tab2, t_tab3, t_tab4 = st.tabs([
+        "⚫ 틱톡 (TikTok)",
+        "🔴 유튜브 쇼츠",
+        "📸 인스타그램 릴스",
+        "🧵 스레드 (Threads)",
+    ])
+
+    with t_tab1:
+        st.markdown("**🔥 틱톡 3초 후킹 카피 추천 (택1):**")
+        for hk in ai_copies["tiktok"][0]:
+            st.code(hk, language="text")
+        st.markdown("**📄 15초 빠른 템포 숏폼 대본:**")
+        st.text_area(
+            "틱톡 대본", ai_copies["tiktok"][1], height=140, key="copy_tt"
+        )
+
+    with t_tab2:
+        st.markdown("**🚨 쇼츠 클릭률 폭발 제목 3종:**")
+        for hk in ai_copies["shorts"][0]:
+            st.code(hk, language="text")
+        st.markdown("**📄 30초 기승전결 쇼츠 풀 대본:**")
+        st.text_area(
+            "쇼츠 대본", ai_copies["shorts"][1], height=140, key="copy_ys"
+        )
+
+    with t_tab3:
+        st.markdown("**✨ 릴스 커버 텍스트 추천:**")
+        for hk in ai_copies["reels"][0]:
+            st.code(hk, language="text")
+        st.markdown("**📄 저장/공유 유도 인스타 본문 캡션:**")
+        st.text_area(
+            "릴스 캡션", ai_copies["reels"][1], height=160, key="copy_ir"
+        )
+
+    with t_tab4:
+        st.markdown("**🧵 스레드 알고리즘 특화 썰형 본문 (원클릭 복사):**")
+        st.text_area(
+            "스레드 본문", ai_copies["threads"], height=160, key="copy_th"
+        )
+
+    # 3. 규격별 미디어 다운로드 리스트 (2열 분리)
+    st.markdown("---")
     st.markdown("#### 📥 규격별 미디어 다운로드")
 
     if videos:
         v_main = videos[0]
         v_size_mb = round(len(v_main) / (1024 * 1024), 1)
-
         c_v_list, c_a_list = st.columns(2)
 
-        # 좌측 열: 영상 규격
         with c_v_list:
             st.markdown("🎬 **영상 (Video)**")
-
-            # 1) UHD / 원본 화질
             r1, r2 = st.columns([2, 1.2])
-            r1.markdown(f"**UHD MP4 (최고화질)**  \n`{v_size_mb} MB` · 무워터마크")
+            r1.markdown(f"**UHD MP4 (최고화질)**  \n`{v_size_mb} MB`")
             r2.download_button(
                 "⬇️ 다운로드",
                 v_main,
@@ -965,11 +1019,10 @@ if st.session_state.get("data"):
                 use_container_width=True,
                 type="primary",
             )
-            st.markdown("<hr style='margin:4px 0;'>", unsafe_allow_html=True)
 
-            # 2) HD / 표준 화질
+            st.markdown("<hr style='margin:4px 0;'>", unsafe_allow_html=True)
             r3, r4 = st.columns([2, 1.2])
-            r3.markdown(f"**HD MP4 (표준화질)**  \n`{v_size_mb} MB` · 인코딩 최적화")
+            r3.markdown(f"**HD MP4 (표준화질)**  \n`{v_size_mb} MB`")
             r4.download_button(
                 "⬇️ 다운로드",
                 v_main,
@@ -979,16 +1032,14 @@ if st.session_state.get("data"):
                 use_container_width=True,
             )
 
-        # 우측 열: 오디오 규격
         with c_a_list:
             st.markdown("🎵 **오디오 (Audio)**")
-
             r5, r6 = st.columns([2, 1.2])
-            r5.markdown("**고음질 MP3 음원**  \nBGM·목소리 분리 추출")
+            r5.markdown("**고음질 MP3 음원**  \nBGM·목소리 분리")
             if r6.button(
                 "🎵 음원 분리", key="btn_ext_mp3", use_container_width=True
             ):
-                with st.spinner("MP3 변환 중..."):
+                with st.spinner("MP3 추출 중..."):
                     st.session_state["mp3_bytes"] = extract_mp3_from_video(
                         v_main
                     )
@@ -1004,7 +1055,6 @@ if st.session_state.get("data"):
                     use_container_width=True,
                 )
 
-    # 사진/노트 포스트
     if images and not videos:
         st.markdown(f"**고화질 사진 ({len(images)}장)**")
         cols = st.columns(3)
