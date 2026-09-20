@@ -6,13 +6,16 @@ import os
 import re
 import subprocess
 import tempfile
+from urllib.parse import quote
+import zipfile
+from deep_translator import GoogleTranslator, MyMemoryTranslator
 import requests
 import streamlit as st
 import yt_dlp
 
 st.set_page_config(
-    page_title="SnapWC - SNS 다운로더",
-    page_icon="⚡",
+    page_title="SnapStudio - SNS 무워터마크 다운로더 & 스튜디오",
+    page_icon="🛒",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
@@ -21,42 +24,22 @@ st.markdown(
     """
 <style>
     .block-container {
-        padding-top: 2.8rem !important;
+        padding-top: 2.2rem !important;
         padding-bottom: 3.5rem !important;
-        max-width: 820px;
+        max-width: 860px;
     }
-    .snap-title {
+    .seller-title {
         text-align: center;
-        font-size: 32px;
+        font-size: 28px;
         font-weight: 800;
-        background: linear-gradient(90deg, #2563eb, #ec4899, #f97316);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 6px;
+        color: #1e293b;
+        margin-bottom: 4px;
     }
-    .snap-sub {
+    .seller-sub {
         text-align: center;
         font-size: 14.5px;
         color: #64748b;
-        margin-bottom: 26px;
-    }
-    .preview-card {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 12px;
-        padding: 18px;
-        margin-top: 15px;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-    }
-    .status-bar {
-        background: #eff6ff;
-        border: 1px solid #bfdbfe;
-        color: #1d4ed8;
-        padding: 8px 12px;
-        border-radius: 6px;
-        font-size: 13.5px;
-        font-weight: 600;
-        margin: 10px 0;
+        margin-bottom: 22px;
     }
 </style>
 
@@ -76,7 +59,7 @@ async function pasteFromClipboard() {
             }
         }
     } catch (e) {
-        alert("클립보드 접근 권한을 허용해 주세요.");
+        alert("클립보드 권한을 허용해 주세요. (Ctrl+V로 직접 붙여넣으셔도 됩니다)");
     }
 }
 </script>
@@ -84,166 +67,200 @@ async function pasteFromClipboard() {
     unsafe_allow_html=True,
 )
 
-if "url_input" not in st.session_state:
-    st.session_state["url_input"] = ""
-if "media_result" not in st.session_state:
-    st.session_state["media_result"] = None
+# 세션 상태 초기화
+if "main_url_field" not in st.session_state:
+    st.session_state["main_url_field"] = ""
+if "processed_data" not in st.session_state:
+    st.session_state["processed_data"] = None
 
 
 # ==========================================
-# 1. URL 정제 (유튜브 Shorts 및 RedNote 완벽 정규화)
+# 1. 번역 및 URL 전처리 엔진
 # ==========================================
-def clean_url(raw_text):
-    # 한글/중국어 혼입 텍스트에서 순수 URL만 추출
-    m = re.search(r"https?://[^\s<>\"']+", raw_text)
+def translate_zh_to_ko(text):
+    if not text or not text.strip():
+        return ""
+    try:
+        return GoogleTranslator(source="zh-CN", target="ko").translate(
+            text[:500]
+        )
+    except Exception:
+        try:
+            return MyMemoryTranslator(source="zh-CN", target="ko-KR").translate(
+                text[:300]
+            )
+        except Exception:
+            return text
+
+
+def get_search_query(text):
+    clean = text.strip()
+    if re.search(r"[\u4e00-\u9fff]", clean):
+        return clean
+    try:
+        return GoogleTranslator(source="ko", target="zh-CN").translate(clean)
+    except Exception:
+        return clean
+
+
+def clean_input_url(raw_text):
+    m = re.search(r"https?://[^\s]+", raw_text)
     clean = m.group(0) if m else raw_text.strip()
 
-    # 모바일 단축 링크 리다이렉트 추적
-    if any(k in clean for k in ["xhslink.com", "v.douyin.com", "vt.tiktok.com", "youtu.be", "/share/"]):
+    if any(
+        k in clean
+        for k in ["xhslink.com", "v.douyin.com", "/share/", "vt.tiktok.com"]
+    ):
         try:
-            r = requests.head(clean, allow_redirects=True, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+            r = requests.head(
+                clean,
+                allow_redirects=True,
+                timeout=6,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
             clean = r.url
         except Exception:
             pass
 
-    # 유튜브 쇼츠 403 방지를 위해 표준 watch 주소로 변환
-    if "youtube.com/shorts/" in clean:
-        shorts_id = clean.split("shorts/")[1].split("?")[0].split("&")[0]
-        clean = f"https://www.youtube.com/watch?v={shorts_id}"
-    elif "youtu.be/" in clean:
-        vid_id = clean.split("youtu.be/")[1].split("?")[0]
-        clean = f"https://www.youtube.com/watch?v={vid_id}"
-
+    # ※ rednote.com 도메인은 절대 xiaohongshu.com으로 치환하지 않음
     return clean
 
 
 # ==========================================
-# 2. RedNote (샤오홍슈) 직접 추출 엔진
+# 2. RedNote / Xiaohongshu 직접 추출 엔진 (SnapWC 방식)
 # ==========================================
-def fetch_rednote(target_url):
+def extract_rednote_package(target_url):
     session = requests.Session()
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            " (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
         "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,ko;q=0.7",
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        ),
     }
 
     res = session.get(target_url, headers=headers, timeout=12)
-    page_html = html.unescape(res.text).replace(r"\/", "/")
+    page_html = res.text
 
-    title = "RedNote Media"
+    title = "RedNote Content"
     desc = ""
     video_bytes = None
-    images = []
+    images_bytes = []
 
-    # 1) JSON 내부 탐색
-    json_match = re.search(r"window\.__INITIAL_STATE__\s*=\s*({.+?})</script>", page_html)
+    json_match = re.search(
+        r"window\.__INITIAL_STATE__\s*=\s*({.+?})</script>", page_html
+    )
     if json_match:
         try:
-            state = json.loads(json_match.group(1))
-            note_dict = state.get("note", {}).get("noteDetailMap", {})
-            note = next(iter(note_dict.values())).get("note", {})
-            title = note.get("title") or title
-            desc = note.get("desc") or desc
+            state_data = json.loads(json_match.group(1))
+            note_dict = state_data.get("note", {}).get("noteDetailMap", {})
+            first_note = next(iter(note_dict.values())).get("note", {})
 
-            # 비디오 확인
-            v_stream = note.get("video", {}).get("media", {}).get("stream", {})
-            v_url = (v_stream.get("h264", [{}])[0].get("masterUrl") or 
-                     v_stream.get("h265", [{}])[0].get("masterUrl"))
+            title = first_note.get("title") or title
+            desc = first_note.get("desc") or desc
+
+            v_stream = (
+                first_note.get("video", {}).get("media", {}).get("stream", {})
+            )
+            v_url = (
+                v_stream.get("h264", [{}])[0].get("masterUrl")
+                or v_stream.get("h265", [{}])[0].get("masterUrl")
+            )
             if v_url:
                 vr = session.get(v_url, timeout=25)
-                if vr.status_code == 200:
+                if vr.status_code == 200 and len(vr.content) > 5000:
                     video_bytes = vr.content
 
-            # 이미지 확인
-            for img in note.get("imageList", []):
-                iu = img.get("urlDefault") or img.get("infoList", [{}])[-1].get("url")
-                if iu:
-                    ir = session.get(iu, timeout=10)
+            for img_item in first_note.get("imageList", []):
+                i_url = img_item.get("urlDefault") or img_item.get(
+                    "infoList", [{}]
+                )[-1].get("url")
+                if i_url:
+                    ir = session.get(i_url, timeout=10)
                     if ir.status_code == 200:
-                        images.append(ir.content)
+                        images_bytes.append(ir.content)
         except Exception:
             pass
 
-    # 2) Fallback: 비디오 스트림 주소 직접 정규식 추출
     if not video_bytes:
-        video_links = re.findall(r'https?://[^\s"\'<>]+(?:xhscdn\.com|sns-video)[^\s"\'<>]*', page_html)
-        for vl in list(dict.fromkeys(video_links)):
-            if not vl.endswith((".jpg", ".png", ".webp")):
-                try:
-                    vr = session.get(vl, timeout=15)
-                    if vr.status_code == 200 and len(vr.content) > 10000:
-                        video_bytes = vr.content
-                        break
-                except Exception:
-                    pass
-
-    # 3) Fallback: 이미지 직접 정규식 추출
-    if not video_bytes and not images:
-        img_links = re.findall(r'https?://[^\s"\'<>]+ci\.xiaohongshu\.com/[^\s"\'<>]+', page_html)
-        for il in list(dict.fromkeys(img_links)):
+        video_urls = re.findall(
+            r'(https?://[^\s"\'<>]*(?:xhscdn\.com|sns-video)[^\s"\'<>]*?\.mp4[^\s"\'<>]*)',
+            page_html.replace(r"\/", "/"),
+        )
+        for vu in list(dict.fromkeys(video_urls)):
             try:
-                ir = session.get(il, timeout=10)
-                if ir.status_code == 200 and len(ir.content) > 5000:
-                    images.append(ir.content)
+                vr = session.get(vu, headers=headers, timeout=15)
+                if vr.status_code == 200 and len(vr.content) > 5000:
+                    video_bytes = vr.content
+                    break
             except Exception:
                 pass
 
-    if not video_bytes and not images:
-        raise Exception("미디어 스트림을 찾지 못했습니다. 링크가 유효한지 확인해 주세요.")
+    if not desc:
+        d_m = re.search(
+            r'<meta\s+(?:name|property)=["\'](?:og:description|description)["\']\s+content=["\'](.*?)["\']',
+            page_html,
+            re.DOTALL,
+        )
+        if d_m:
+            desc = html.unescape(d_m.group(1))
+
+    if not video_bytes and not images_bytes:
+        og_imgs = re.findall(
+            r'<meta\s+property=["\']og:image["\']\s+content=["\'](.*?)["\']',
+            page_html,
+        )
+        for iu in og_imgs:
+            try:
+                ir = session.get(html.unescape(iu), timeout=10)
+                if ir.status_code == 200:
+                    images_bytes.append(ir.content)
+            except Exception:
+                pass
+
+    if not video_bytes and not images_bytes:
+        raise Exception("미디어 데이터를 찾을 수 없습니다. 링크를 확인해 주세요.")
 
     return {
         "title": title,
         "desc": desc,
         "video": video_bytes,
-        "images": images,
+        "images": images_bytes,
     }
 
 
 # ==========================================
-# 3. 유튜브 & 기타 SNS 다운로더 (403 방어 적용)
+# 3. 도우인 / 틱톡 / 유튜브 등 범용 다운로더
 # ==========================================
-def fetch_generic(target_url):
+def extract_generic_package(target_url):
     temp_dir = tempfile.mkdtemp()
     ydl_opts = {
         "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
-        "format": "best[ext=mp4]/best",
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "merge_output_format": "mp4",
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1"
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            )
         },
     }
 
-    # 유튜브 403 에러 우회 설정
     if "youtube.com" in target_url or "youtu.be" in target_url:
         ydl_opts["extractor_args"] = {
-            "youtube": {"player_client": ["ios", "mweb"]}
+            "youtube": {"player_client": ["android", "ios", "tv_embedded"]}
         }
 
-    info = None
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(target_url, download=True)
-    except Exception as e:
-        # 다운로드가 403에 걸릴 경우 직통 스트림 URL 추출로 우회
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(target_url, download=False)
-            stream_url = info.get("url")
-            if stream_url:
-                r = requests.get(stream_url, timeout=25, headers=ydl_opts["http_headers"])
-                if r.status_code == 200:
-                    return {
-                        "title": info.get("title", "SNS Media"),
-                        "desc": info.get("description", ""),
-                        "video": r.content,
-                        "images": [],
-                    }
-        raise e
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(target_url, download=True)
+        title = info.get("title", "제품 영상")
+        desc = info.get("description", "")
 
-    title = info.get("title", "SNS Media")
-    desc = info.get("description", "")
     video_bytes = None
-
     for f in glob.glob(os.path.join(temp_dir, "*")):
         if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm")):
             with open(f, "rb") as fp:
@@ -258,33 +275,230 @@ def fetch_generic(target_url):
     }
 
 
-def clear_input():
-    st.session_state["url_input"] = ""
-    st.session_state["media_result"] = None
+# ==========================================
+# 4. FFmpeg 정밀 세탁 엔진
+# ==========================================
+def process_video_remix(video_bytes, hflip, speed, mute, blur_pos):
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as in_f:
+        in_f.write(video_bytes)
+        in_path = in_f.name
+
+    out_path = in_path.replace(".mp4", "_remix.mp4")
+    filters = []
+
+    if hflip:
+        filters.append("hflip")
+    if speed != 1.0:
+        filters.append(f"setpts={1.0 / speed}*PTS")
+
+    if blur_pos != "블러 없음":
+        pos_map = {
+            "하단 자막 (바닥 20%)": (0.80, 0.20),
+            "중하단 자막 (바닥 35% 위)": (0.65, 0.20),
+            "중앙 자막 (영상 한가운데)": (0.40, 0.20),
+            "상단 자막 (영상 상단 20%)": (0.05, 0.20),
+        }
+        y_ratio, h_ratio = pos_map.get(blur_pos, (0.80, 0.20))
+        sub_filter = (
+            f"split[main][sub];"
+            f"[sub]crop=iw:ih*{h_ratio}:0:ih*{y_ratio},boxblur=20:5[blurred];"
+            f"[main][blurred]overlay=0:H*{y_ratio}"
+        )
+        if filters:
+            vf_cmd = ["-filter_complex", f"{','.join(filters)},{sub_filter}"]
+        else:
+            vf_cmd = ["-filter_complex", sub_filter]
+    else:
+        vf_cmd = ["-vf", ",".join(filters)] if filters else []
+
+    af_cmd = (
+        ["-an"]
+        if mute
+        else (["-filter:a", f"atempo={speed}"] if speed != 1.0 else [])
+    )
+
+    cmd = (
+        ["ffmpeg", "-y", "-i", in_path]
+        + vf_cmd
+        + af_cmd
+        + [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-c:a",
+            "aac",
+            "-strict",
+            "experimental",
+            out_path,
+        ]
+    )
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if os.path.exists(out_path):
+        with open(out_path, "rb") as f:
+            res = f.read()
+        os.remove(in_path)
+        os.remove(out_path)
+        return res
+    return video_bytes
 
 
 # ==========================================
-# UI 영역
+# 5. 실전 4대 플랫폼 판매 대본 생성기
 # ==========================================
-st.markdown('<div class="snap-title">SnapWC 무워터마크 다운로더</div>', unsafe_allow_html=True)
-st.markdown('<div class="snap-sub">RedNote · YouTube Shorts · TikTok · Reels · Threads 무워터마크 저장</div>', unsafe_allow_html=True)
+def generate_platform_scripts(kor_title, kor_desc):
+    clean_kw = re.sub(r"[^\w\s]", "", kor_title).strip()
+    words = clean_kw.split()
+    prod = " ".join(words[:3]) if words else "이 꿀템"
 
-# 검색 입력창 (✖ 지우기, 📋 붙여넣기 탑재)
+    threads = (
+        "자취 5년차인데 솔직히 이거 왜 이제 알았나 싶네요... \n\n"
+        f"요즘 인스타/샤오홍슈에서 난리 난 {prod} 써봤는데 삶의 질이 달라집니다.\n"
+        "기존 건 손목도 아프고 시간도 오래 걸렸는데, 이건 3초 만에 싹 해결되네요 ㅋㅋㅋ\n\n"
+        f"{kor_desc[:120]}...\n\n"
+        "궁금하신 분 계시면 좌표 댓글로 남겨둘게요!"
+    )
+
+    shorts = (
+        "[0~3초 시선 후킹]\n"
+        f'"아직도 고생하면서 쓰시나요? 쿠팡 직원도 몰래 산다는 {prod} 실물입니다."\n\n'
+        "[3~12초 결핍 자극]\n"
+        '"매번 귀찮고 찌든 때/정리 안 돼서 스트레스 받으셨죠? 기존 제품은 힘만 들었습니다."\n\n'
+        "[12~24초 기능 시연]\n"
+        '"이건 갖다 대기만 하면 틈새까지 싹 밀어냅니다. 방수까지 돼서 관리도 편해요."\n\n'
+        "[24~30초 댓글 유도]\n"
+        '"가격 대비 만족도 300%입니다. 제품 좌표는 고정 댓글 확인하세요!"'
+    )
+
+    reels = (
+        f"살림/청소/정리 스트레스 받던 분들 집중! 🚨\n{prod} 찐 사용 후기 가져왔어요 🫧\n\n"
+        "장점 3줄 요약:\n"
+        "1. 손목에 힘 하나도 안 들어감\n"
+        "2. 틈새 구석까지 완벽 커버\n"
+        "3. 공간 차지 안 하는 슬림 보관\n\n"
+        "📌 나중에 사려고 찾으면 품절되니 지금 미리 [저장]해두세요!\n"
+        "🔗 제품 링크는 프로필에 남겨둘게요 🤍"
+    )
+
+    tiktok = (
+        f'[0~2초] "틱톡 알고리즘이 절 여기로 이끌었습니다..."\n'
+        f"[2~8초] {prod} 작동 쾌감 영상 노출 (Before ➔ After)\n"
+        f'[8~12초] "솔직히 가격 보고 반신반의했는데 가성비 미쳤습니다."\n'
+        f'[12~15초] "좌표는 프로필 링크 1번에 있어요! #살림꿀템 #자취템 #fyp"'
+    )
+
+    return {"threads": threads, "shorts": shorts, "reels": reels, "tiktok": tiktok}
+
+
+# ==========================================
+# 콜백 함수: 주소 지우기 X 버튼
+# ==========================================
+def clear_url_callback():
+    st.session_state["main_url_field"] = ""
+    st.session_state["processed_data"] = None
+
+
+# ==========================================
+# UI 1. 사이드바 (소싱 검색창)
+# ==========================================
+with st.sidebar:
+    st.markdown("### 🇨🇳 현지 소싱 검색 열기")
+    st.caption("한글 또는 중국어를 입력하면 현지 검색창으로 직결됩니다.")
+
+    kw_input = st.text_input("소싱할 제품명", placeholder="예: 틈새 청소솔 또는 电动缝隙刷")
+    if kw_input.strip():
+        q = get_search_query(kw_input)
+        st.success(f"검색어: **{q}**")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.link_button(
+                "📕 RedNote",
+                f"https://www.rednote.com/search_result?keyword={quote(q + ' 沉浸式')}",
+                use_container_width=True,
+            )
+        with c2:
+            st.link_button(
+                "🎵 Douyin",
+                f"https://www.douyin.com/search/{quote(q)}",
+                use_container_width=True,
+            )
+
+
+# ==========================================
+# UI 2. 메인 헤더
+# ==========================================
+st.markdown('<div class="seller-title">🛒 SNS 미디어 다운로더 & 스튜디오</div>', unsafe_allow_html=True)
+st.markdown('<div class="seller-sub">RedNote · Douyin · TikTok · Shorts 무워터마크 추출 & 즉석 세탁</div>', unsafe_allow_html=True)
+
+
+# ==========================================
+# UI 3. 메인: 한글 ➔ 중국어 바이럴 키워드 검색기 (복원 완료!)
+# ==========================================
+with st.expander("🔍 한글 ➔ 샤오홍슈(RedNote) 바이럴 키워드 검색기 (치트키 조합)", expanded=False):
+    st.caption("한글 제품명을 입력하면 중국 현지 바이럴 검색어로 즉시 조합되어 검색창이 열립니다.")
+    with st.form("trans_main_form"):
+        k_col1, k_col2 = st.columns([3.5, 1.2])
+        with k_col1:
+            main_kor_kw = st.text_input(
+                "제품명 입력",
+                placeholder="예: 전동 틈새 청소솔, 자취방 조명, 빨래 바구니",
+                label_visibility="collapsed",
+            )
+        with k_col2:
+            trans_submit = st.form_submit_button("🇨🇳 치트키 생성", use_container_width=True)
+
+    if trans_submit and main_kor_kw.strip():
+        try:
+            zh_trans = get_search_query(main_kor_kw)
+            presets = [
+                ("🎬 시각적 ASMR / 쾌감", f"{zh_trans} 解压 沉浸式"),
+                ("✨ 삶의 질 상승템 / 치트키", f"{zh_trans} 神器 提升幸福感"),
+                ("🏠 1인 가구 / 자취방 꿀템", f"{zh_trans} 独居好物 出租屋"),
+                ("🧹 청소·정리 강박 / 귀차니즘", f"{zh_trans} 懒人 强迫症"),
+            ]
+            st.success(f"기본 번역: **{zh_trans}**")
+            for label, combo in presets:
+                c1, c2 = st.columns([3, 1])
+                c1.code(combo, language="text")
+                c2.link_button(
+                    "🔍 검색 열기",
+                    f"https://www.rednote.com/search_result?keyword={quote(combo)}",
+                    use_container_width=True,
+                )
+        except Exception as e:
+            st.error(f"번역 오류: {e}")
+
+st.write("")
+
+
+# ==========================================
+# UI 4. 링크 입력창 (지우기 ✖ 및 클립보드 📋 버튼 복원 완료!)
+# ==========================================
 c_in, c_clear, c_paste, c_btn = st.columns([3.8, 0.45, 0.45, 1.3])
 
 with c_in:
-    url_val = st.text_input(
+    url_input = st.text_input(
         "URL",
-        key="url_input",
-        placeholder="영상 링크 또는 공유 텍스트를 여기에 붙여넣어 주세요",
+        key="main_url_field",
+        placeholder="영상 링크 또는 공유한 텍스트를 여기에 붙여넣어 주세요",
         label_visibility="collapsed",
     )
 
 with c_clear:
-    st.button("✖", on_click=clear_input, help="주소 지우기", use_container_width=True)
+    st.button(
+        "✖",
+        on_click=clear_url_callback,
+        help="주소 지우기",
+        use_container_width=True,
+    )
 
 with c_paste:
-    st.button("📋", help="클립보드에서 붙여넣기", use_container_width=True)
+    st.button(
+        "📋",
+        help="클립보드에서 붙여넣기",
+        use_container_width=True,
+    )
     st.markdown(
         """
         <script>
@@ -303,77 +517,136 @@ with c_paste:
 with c_btn:
     submit_btn = st.button("다운로드 링크 받기", use_container_width=True, type="primary")
 
-st.caption("YouTube Shorts, RedNote(샤오홍슈), TikTok, Instagram, Threads 완벽 지원")
+
+# ==========================================
+# UI 5. 원클릭 세탁 옵션 바
+# ==========================================
+with st.expander("⚙️ 원클릭 영상 세탁 옵션 (필요시 조절)", expanded=True):
+    op1, op2, op3, op4 = st.columns(4)
+    with op1:
+        opt_flip = st.checkbox("🔄 좌우 반전", value=True)
+    with op2:
+        opt_spd = st.selectbox("⏩ 배속", [1.0, 1.05, 1.1, 1.15, 1.2], index=2)
+    with op3:
+        opt_blur = st.selectbox(
+            "🔲 자막 블러 위치",
+            ["하단 자막 (바닥 20%)", "중하단 자막 (바닥 35% 위)", "중앙 자막 (영상 한가운데)", "상단 자막 (영상 상단 20%)", "블러 없음"],
+            index=0,
+        )
+    with op4:
+        opt_mute = st.checkbox("🔇 원본 음소거", value=False)
 
 
-# 다운로드 실행
-if submit_btn and url_val.strip():
-    with st.spinner("미디어 분석 및 무워터마크 추출 중..."):
+# 다운로드 및 세탁 실행
+if submit_btn and url_input.strip():
+    with st.spinner("미디어 무워터마크 추출 및 처리 중..."):
         try:
-            target_link = clean_url(url_val)
+            target_url = clean_input_url(url_input)
 
-            if "rednote.com" in target_link or "xiaohongshu.com" in target_link:
-                res = fetch_rednote(target_link)
+            # RedNote 및 샤오홍슈는 직접 파서 가동 (도메인 변조 없이 추출)
+            if "rednote.com" in target_url or "xiaohongshu.com" in target_url:
+                raw_data = extract_rednote_package(target_url)
             else:
-                res = fetch_generic(target_link)
+                raw_data = extract_generic_package(target_url)
 
-            st.session_state["media_result"] = res
-            st.success("✅ 미디어 준비 완료!")
+            # 비디오가 있으면 세탁 처리
+            remix_v = None
+            if raw_data["video"]:
+                remix_v = process_video_remix(
+                    raw_data["video"], opt_flip, opt_spd, opt_mute, opt_blur
+                )
+
+            # 중국어 본문 한글 번역
+            kor_title = translate_zh_to_ko(raw_data["title"])
+            kor_desc = translate_zh_to_ko(raw_data["desc"])
+
+            st.session_state["processed_data"] = {
+                "raw_video": raw_data["video"],
+                "remix_video": remix_v,
+                "images": raw_data["images"],
+                "title": kor_title,
+                "desc": kor_desc,
+            }
+            st.success("✅ 다운로드 링크가 준비되었습니다!")
         except Exception as e:
             st.error(f"다운로드 실패: {e}")
 
 
 # ==========================================
-# 결과 화면 (스크린샷 17 스타일 1:1 구현)
+# UI 6. 결과 화면 & 판매 대본 출력
 # ==========================================
-if st.session_state.get("media_result"):
-    data = st.session_state["media_result"]
-    vid = data.get("video")
-    imgs = data.get("images", [])
-    title = data.get("title", "downloaded_video")
-    desc = data.get("desc", "")
+if st.session_state.get("processed_data"):
+    data = st.session_state["processed_data"]
+    raw_v = data["raw_video"]
+    remix_v = data["remix_video"]
+    imgs = data["images"]
+    title = data["title"]
+    desc = data["desc"]
 
     st.markdown("---")
-    st.markdown("#### 🎬 파일 미리보기 및 다운로드")
 
-    if vid:
-        # 1) SnapWC 스타일 대형 비디오 미리보기
-        st.video(vid)
+    # 1) 영상 결과물
+    if remix_v or raw_v:
+        c_v1, c_v2 = st.columns([1.5, 1.1])
+        with c_v1:
+            st.video(remix_v if remix_v else raw_v)
+            st.caption("✨ [세탁 완료 영상] 좌우반전 + 배속 + 자막블러 적용")
+        with c_v2:
+            st.markdown(f"**제품명:** {title}")
+            st.text_area("번역된 내용", desc, height=110)
 
-        # 2) 파일명 및 완료 상태 바
-        clean_name = re.sub(r'[\\/*?:"<>|]', "", title)[:40]
-        st.markdown(f"**{clean_name}.mp4**")
-        st.markdown('<div class="status-bar">다운로드가 완료되었습니다.</div>', unsafe_allow_html=True)
-
-        # 3) 다운로드 액션 버튼
-        v_mb = round(len(vid) / (1024 * 1024), 1)
-        c_d1, c_d2 = st.columns([1.5, 1])
-        with c_d1:
-            st.download_button(
-                f"⬇️ 다운로드 ({v_mb} MB)",
-                vid,
-                f"{clean_name}.mp4",
-                "video/mp4",
-                type="primary",
-                use_container_width=True,
-            )
-        with c_d2:
-            st.button("📋 다운로드 준비됨", use_container_width=True)
-
-        if desc:
-            st.text_area("게시물 원본 텍스트", desc, height=90)
-
-    elif imgs:
-        st.markdown(f"**고화질 사진 노트 ({len(imgs)}장)**")
-        cols = st.columns(3)
-        for idx, img_bytes in enumerate(imgs):
-            with cols[idx % 3]:
-                st.image(img_bytes, use_container_width=True)
+            if remix_v:
                 st.download_button(
-                    f"⬇️ 사진 #{idx+1}",
-                    img_bytes,
-                    f"photo_{idx+1}.jpg",
-                    "image/jpeg",
-                    key=f"p_{idx}",
+                    "⬇️ 세탁 완료 영상 받기 (MP4)",
+                    remix_v,
+                    "remix_video.mp4",
+                    "video/mp4",
+                    type="primary",
                     use_container_width=True,
                 )
+            if raw_v:
+                st.download_button(
+                    "⬇️ 원본 영상 다운로드 (MP4)",
+                    raw_v,
+                    "raw_video.mp4",
+                    "video/mp4",
+                    use_container_width=True,
+                )
+
+    # 2) 사진 결과물 (카드뉴스/노트인 경우)
+    if imgs and not raw_v:
+        st.markdown(f"#### 🖼️ 고화질 사진 노트를 추출했습니다 ({len(imgs)}장)")
+        cols = st.columns(3)
+        for idx, img_b in enumerate(imgs):
+            with cols[idx % 3]:
+                st.image(img_b, use_container_width=True)
+                st.download_button(
+                    f"⬇️ 사진 #{idx+1} 받기",
+                    img_b,
+                    f"image_{idx+1}.jpg",
+                    "image/jpeg",
+                    key=f"img_dl_{idx}",
+                    use_container_width=True,
+                )
+
+    # 3) 다운로드 바로 밑: 4대 플랫폼 판매 대본
+    st.markdown("---")
+    st.markdown("#### ✍️ 4대 플랫폼 맞춤 판매 대본 (원클릭 복사)")
+    st.caption("다운받은 영상의 실제 내용을 바탕으로 구성된 실전 판매 대본입니다.")
+
+    scripts = generate_platform_scripts(title, desc)
+    tab_th, tab_ys, tab_ir, tab_tt = st.tabs([
+        "🧵 스레드 (댓글/링크 유도)",
+        "🔴 유튜브 쇼츠 (30초 풀버전)",
+        "📸 인스타 릴스 (저장 유도형)",
+        "⚫ 틱톡 (15초 초고속형)",
+    ])
+
+    with tab_th:
+        st.text_area("스레드 본문", scripts["threads"], height=190)
+    with tab_ys:
+        st.text_area("쇼츠 대본", scripts["shorts"], height=210)
+    with tab_ir:
+        st.text_area("릴스 캡션", scripts["reels"], height=210)
+    with tab_tt:
+        st.text_area("틱톡 대본", scripts["tiktok"], height=170)
