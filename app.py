@@ -14,7 +14,7 @@ import streamlit as st
 import yt_dlp
 
 st.set_page_config(
-    page_title="SnapWC - SNS 무워터마크 다운로더 & 스튜디오",
+    page_title="SnapWC - SNS 다운로더 & 스튜디오",
     page_icon="⚡",
     layout="centered",
     initial_sidebar_state="collapsed",
@@ -25,51 +25,25 @@ st.markdown(
     """
 <style>
     .block-container {
-        padding-top: 1.5rem;
+        padding-top: 1.2rem;
         padding-bottom: 3rem;
         max-width: 840px;
     }
-    /* SnapWC 상단 네비게이션 바 */
-    .snap-nav {
-        display: flex;
-        justify-content: center;
-        gap: 15px;
-        flex-wrap: wrap;
-        margin-bottom: 25px;
-        padding-bottom: 12px;
-        border-bottom: 1px solid #f1f5f9;
-    }
-    .snap-nav-item {
-        font-size: 14px;
-        font-weight: 500;
-        color: #475569;
-        text-decoration: none;
-        padding: 4px 8px;
-        border-radius: 6px;
-    }
-    /* 메인 타이틀 그라데이션 */
     .snap-hero-title {
         text-align: center;
         font-size: 32px;
         font-weight: 800;
-        background: linear-gradient(90deg, #3b82f6, #ec4899, #f97316);
+        background: linear-gradient(90deg, #2563eb, #db2777, #ea580c);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        margin-bottom: 6px;
+        margin-top: 10px;
+        margin-bottom: 4px;
     }
     .snap-hero-sub {
         text-align: center;
-        font-size: 15px;
+        font-size: 14.5px;
         color: #64748b;
-        margin-bottom: 25px;
-    }
-    /* 안내 배너 */
-    .support-footer {
-        text-align: center;
-        font-size: 12.5px;
-        color: #94a3b8;
-        margin-top: 10px;
-        margin-bottom: 25px;
+        margin-bottom: 22px;
     }
     .snap-header {
         font-size: 20px;
@@ -80,24 +54,21 @@ st.markdown(
     .snap-sub {
         font-size: 13.5px;
         color: #64748b;
-        margin-bottom: 15px;
+        margin-bottom: 16px;
+    }
+    div[data-testid="stHorizontalBlock"] > div:first-child {
+        display: flex;
+        align-items: center;
     }
 </style>
-
-<div class="snap-nav">
-    <span class="snap-nav-item" style="color: #ef4444; font-weight:700;">📕 샤오홍슈(RedNote)</span>
-    <span class="snap-nav-item">⚫ TikTok</span>
-    <span class="snap-nav-item">🔴 YouTube</span>
-    <span class="snap-nav-item">📸 Instagram</span>
-    <span class="snap-nav-item">🧵 Threads</span>
-    <span class="snap-nav-item">🌐 X (트위터)</span>
-</div>
 """,
     unsafe_allow_html=True,
 )
 
 
-# 1. 중국어 번역 캐싱
+# ==========================================
+# 1. 중국어 번역 캐싱 엔진
+# ==========================================
 @st.cache_data(show_spinner=False)
 def get_chinese_translation(text):
     clean = text.strip()
@@ -109,13 +80,14 @@ def get_chinese_translation(text):
         )
 
 
-# 2. URL 전처리 (rednote.com / xhslink.com / threads / youtube 정제)
+# ==========================================
+# 2. URL 전처리 (단축 링크 및 리다이렉트 자동 해제)
+# ==========================================
 def clean_social_url(raw_input):
-    # 텍스트와 섞여 있는 링크만 정규식으로 추출
     url_match = re.search(r"https?://[^\s]+", raw_input)
     clean = url_match.group(0) if url_match else raw_input.strip()
 
-    # 샤오홍슈 단축 링크 또는 스레드 share 링크 리다이렉트 추적
+    # 샤오홍슈 단축 링크(xhslink.com) 또는 스레드 share 링크 자동 추적
     if "xhslink.com" in clean or "/share/" in clean:
         try:
             head_res = requests.head(
@@ -128,7 +100,7 @@ def clean_social_url(raw_input):
         except Exception:
             pass
 
-    # rednote.com 링크를 표준 xiaohongshu.com 주소 체계로 변환 (yt-dlp 호환)
+    # rednote.com 링크 표준화
     if "rednote.com" in clean:
         clean = clean.replace("rednote.com/discovery/item/", "xiaohongshu.com/explore/")
         clean = clean.replace("rednote.com", "xiaohongshu.com")
@@ -143,7 +115,9 @@ def clean_social_url(raw_input):
     return clean
 
 
-# 3. 샤오홍슈 & 스레드 직접 파서 (yt-dlp 미지원/차단 시 Fallback)
+# ==========================================
+# 3. 샤오홍슈 & 스레드 전용 메타 파서
+# ==========================================
 def extract_direct_meta(url):
     session = requests.Session()
     headers = {
@@ -163,7 +137,7 @@ def extract_direct_meta(url):
     description = "추출된 본문이 없습니다."
     videos, images = [], []
 
-    # 샤오홍슈 JSON 데이터 직접 파싱
+    # 샤오홍슈 JSON 파싱
     if "xiaohongshu.com" in url or "rednote" in url:
         try:
             json_match = re.search(
@@ -176,7 +150,6 @@ def extract_direct_meta(url):
                 title = first_note.get("title") or title
                 description = first_note.get("desc") or description
 
-                # 무워터마크 동영상 추출
                 if first_note.get("type") == "video":
                     v_stream = (
                         first_note.get("video", {})
@@ -190,7 +163,6 @@ def extract_direct_meta(url):
                     if v_url:
                         videos.append(v_url)
 
-                # 고화질 사진 리스트 추출
                 for img_item in first_note.get("imageList", []):
                     img_u = img_item.get("urlDefault") or img_item.get(
                         "infoList", [{}]
@@ -200,7 +172,7 @@ def extract_direct_meta(url):
         except Exception:
             pass
 
-    # Fallback: 일반 메타 태그 추출
+    # 메타 태그 Fallback
     if not description or description == "추출된 본문이 없습니다.":
         desc_match = re.search(
             r'<meta\s+(?:property|name)=["\'](?:og:description|twitter:description)["\']\s+content=["\'](.*?)["\']',
@@ -227,7 +199,6 @@ def extract_direct_meta(url):
             if "static.cdninstagram.com" not in clean_i:
                 images.append(clean_i)
 
-    # 미디어 바이너리 수집
     video_bytes_list, image_bytes_list = [], []
     for v_u in list(dict.fromkeys(videos)):
         try:
@@ -259,7 +230,9 @@ def extract_direct_meta(url):
     }
 
 
+# ==========================================
 # 4. 범용 다운로드 엔진 (yt-dlp)
+# ==========================================
 def download_media_package(target_url):
     temp_dir = tempfile.mkdtemp()
     out_tmpl = os.path.join(temp_dir, "%(id)s.%(ext)s")
@@ -327,7 +300,9 @@ def download_media_package(target_url):
     }
 
 
+# ==========================================
 # 5. FFmpeg 엔진 (MP3 추출 & 세탁 편집)
+# ==========================================
 def extract_mp3_from_video(video_bytes):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as in_file:
         in_file.write(video_bytes)
@@ -402,24 +377,117 @@ def process_video_remix(video_bytes, hflip, speed, mute):
     return video_bytes
 
 
-# ================= UI 영역 =================
+# ==========================================
+# UI 1. 상단 SnapWC 플랫폼 전환 메뉴 바
+# ==========================================
+platform_list = [
+    "📕 샤오홍슈",
+    "⚫ TikTok",
+    "🔴 YouTube",
+    "📸 Instagram",
+    "🧵 Threads",
+    "🌐 기타 SNS",
+]
 
-# SnapWC 메인 히어로 타이틀
+selected_platform = st.radio(
+    "플랫폼 선택",
+    options=platform_list,
+    index=0,
+    horizontal=True,
+    label_visibility="collapsed",
+)
+
+# 선택된 플랫폼별 동적 타이틀 및 안내 설정
+title_map = {
+    "📕 샤오홍슈": (
+        "샤오홍슈 워터마크 없는 다운로드",
+        "샤오홍슈(RedNote) 영상, 사진, 노트를 HD로 무료 저장",
+    ),
+    "⚫ TikTok": (
+        "틱톡 워터마크 없는 다운로드",
+        "TikTok 고화질 동영상 무워터마크 MP4 다운로드",
+    ),
+    "🔴 YouTube": (
+        "유튜브 동영상 & 쇼츠 다운로드",
+        "YouTube Shorts 및 일반 영상을 고화질로 저장",
+    ),
+    "📸 Instagram": (
+        "인스타그램 릴스 & 사진 다운로드",
+        "Instagram 릴스, 비디오, 피드 사진 원본 저장",
+    ),
+    "🧵 Threads": (
+        "스레드 영상 & 사진 다운로드",
+        "Threads 본문 텍스트, 동영상 및 이미지 패키지 다운로드",
+    ),
+    "🌐 기타 SNS": (
+        "SNS 미디어 올인원 다운로드",
+        "X(트위터), 페이스북 등 다양한 SNS 링크를 지원합니다",
+    ),
+}
+
+main_title, sub_title = title_map[selected_platform]
+
 st.markdown(
-    '<div class="snap-hero-title">샤오홍슈 워터마크 없는 다운로드</div>',
-    unsafe_allow_html=True,
+    f'<div class="snap-hero-title">{main_title}</div>', unsafe_allow_html=True
 )
 st.markdown(
-    '<div class="snap-hero-sub">샤오홍슈 영상, 사진, 노트를 HD로 무료 저장</div>',
-    unsafe_allow_html=True,
+    f'<div class="snap-hero-sub">{sub_title}</div>', unsafe_allow_html=True
 )
 
-# SnapWC 스타일 검색 & 다운로드 바
+# ==========================================
+# UI 2. 한글 ➔ 중국어 바이럴 치트키 검색기 (전면 상단 배치)
+# ==========================================
+with st.expander(
+    "🔍 한글 ➔ 샤오홍슈 바이럴 중국어 키워드 검색기 (치트키 조합)",
+    expanded=(selected_platform == "📕 샤오홍슈"),
+):
+    st.caption(
+        "한글로 제품명을 적고 엔터를 누르면 중국 현지 바이럴 검색어로 즉시 변환되어 샤오홍슈로 바로 연결됩니다."
+    )
+    with st.form("trans_form"):
+        k_col1, k_col2 = st.columns([3.5, 1.2])
+        with k_col1:
+            kor_keyword = st.text_input(
+                "제품명 입력",
+                placeholder="예: 전동 틈새 청소솔, 자취방 조명, 빨래 바구니",
+                label_visibility="collapsed",
+            )
+        with k_col2:
+            trans_submit = st.form_submit_button(
+                "🇨🇳 치트키 생성", use_container_width=True
+            )
+
+    if trans_submit and kor_keyword.strip():
+        try:
+            with st.spinner("중국어 번역 및 바이럴 조합 생성 중..."):
+                translated = get_chinese_translation(kor_keyword)
+                presets = [
+                    ("🎬 시각적 ASMR / 쾌감", f"{translated} 解压 沉浸式"),
+                    ("✨ 삶의 질 상승템 / 치트키", f"{translated} 神器 提升幸福感"),
+                    ("🏠 1인 가구 / 자취방 꿀템", f"{translated} 独居好物 出租屋"),
+                    ("🧹 청소·정리 강박 / 귀차니즘", f"{translated} 懒人 强迫症"),
+                ]
+                st.success(f"기본 번역 단어: **{translated}**")
+                for label, combo in presets:
+                    c1, c2 = st.columns([3, 1])
+                    c1.code(combo, language="text")
+                    search_url = f"https://www.xiaohongshu.com/search_result?keyword={quote(combo)}"
+                    c2.link_button(
+                        "🔍 검색 열기", search_url, use_container_width=True
+                    )
+        except Exception as err:
+            st.error(f"번역 오류: {err}")
+
+st.write("")
+
+# ==========================================
+# UI 3. SnapWC 링크 검색 & 다운로드 바
+# ==========================================
 c_input, c_btn = st.columns([3.8, 1.2])
 with c_input:
     url_input = st.text_input(
         "입력창",
-        placeholder="영상 링크 또는 공유한 텍스트를 여기에 붙여넣어 주세요",
+        placeholder="영상 링크 또는 공유 텍스트를 여기에 붙여넣어 주세요",
         label_visibility="collapsed",
     )
 with c_btn:
@@ -428,50 +496,21 @@ with c_btn:
     )
 
 st.markdown(
-    '<div class="support-footer">YouTube, TikTok, X (Twitter), Instagram,'
-    " Facebook, Threads, 샤오홍슈(RedNote) 등 지원</div>",
+    '<div style="text-align: center; font-size: 12.5px; color: #94a3b8;'
+    ' margin-top: 8px; margin-bottom: 25px;">YouTube, TikTok, X (Twitter),'
+    " Instagram, Facebook, Threads, 샤오홍슈(RedNote) 지원</div>",
     unsafe_allow_html=True,
 )
-
-# 상단 접이식 중국어 키워드 생성기
-with st.expander("🔍 샤오홍슈 바이럴 키워드 치트키 생성기 열기", expanded=False):
-    with st.form("trans_form"):
-        kor_keyword = st.text_input(
-            "제품명 입력", placeholder="예: 전동 틈새 청소솔"
-        )
-        trans_submit = st.form_submit_button("🇨🇳 중국어 키워드 생성")
-
-    if trans_submit and kor_keyword.strip():
-        try:
-            translated = get_chinese_translation(kor_keyword)
-            presets = [
-                ("🎬 시각적 ASMR", f"{translated} 解压 沉浸式"),
-                ("✨ 삶의 질 상승템", f"{translated} 神器 提升幸福感"),
-                ("🏠 1인 가구/자취방", f"{translated} 独居好物 出租屋"),
-                ("🧹 청소/정리 강박", f"{translated} 懒人 强迫症"),
-            ]
-            st.markdown(f"**기본 번역:** `{translated}`")
-            for title, combo in presets:
-                c1, c2 = st.columns([3, 1])
-                c1.code(combo, language="text")
-                c2.link_button(
-                    "🔍 검색",
-                    f"https://www.xiaohongshu.com/search_result?keyword={quote(combo)}",
-                    use_container_width=True,
-                )
-        except Exception as err:
-            st.error(f"번역 오류: {err}")
 
 # 다운로드 실행
 if analyze_btn:
     if not url_input.strip():
         st.warning("링크 또는 공유 텍스트를 입력해 주세요.")
     else:
-        with st.spinner("미디어 분석 및 무워터마크 추출 중..."):
+        with st.spinner("미디어 분석 및 분리 추출 중..."):
             try:
                 target_url = clean_social_url(url_input)
 
-                # 샤오홍슈/스레드는 전용 메타 파서 우선 시도, 실패 시 yt-dlp 분기
                 if any(
                     k in target_url
                     for k in ["rednote", "xiaohongshu", "threads"]
@@ -491,7 +530,9 @@ if analyze_btn:
             except Exception as e:
                 st.error(f"분석 실패: {e}")
 
-# 다운로드 결과 카드 렌더링
+# ==========================================
+# UI 4. SnapWC 결과 화면 & 즉석 편집실
+# ==========================================
 if "data" in st.session_state and st.session_state["data"]:
     data = st.session_state["data"]
     videos = data["videos"]
@@ -510,7 +551,7 @@ if "data" in st.session_state and st.session_state["data"]:
         unsafe_allow_html=True,
     )
 
-    # 1. 상단 프리뷰 카드 (커버 썸네일 + 본문)
+    # 1. 상단 프리뷰 카드 (커버 이미지 + 본문/해시태그)
     with st.container():
         c_thumb, c_text = st.columns([1.3, 2.7])
         with c_thumb:
@@ -537,6 +578,7 @@ if "data" in st.session_state and st.session_state["data"]:
         v_main = videos[0]
         v_size_mb = round(len(v_main) / (1024 * 1024), 1)
 
+        # UHD
         r1_col1, r1_col2 = st.columns([3, 1])
         with r1_col1:
             st.markdown(
@@ -554,11 +596,12 @@ if "data" in st.session_state and st.session_state["data"]:
             )
 
         st.markdown(
-            "<hr style='margin: 8px 0; border: none; border-top: 1px solid"
+            "<hr style='margin: 6px 0; border: none; border-top: 1px solid"
             " #f1f5f9;'>",
             unsafe_allow_html=True,
         )
 
+        # HD
         r2_col1, r2_col2 = st.columns([3, 1])
         with r2_col1:
             st.markdown(
@@ -575,11 +618,12 @@ if "data" in st.session_state and st.session_state["data"]:
             )
 
         st.markdown(
-            "<hr style='margin: 8px 0; border: none; border-top: 1px solid"
+            "<hr style='margin: 6px 0; border: none; border-top: 1px solid"
             " #f1f5f9;'>",
             unsafe_allow_html=True,
         )
 
+        # MP3
         r3_col1, r3_col2 = st.columns([3, 1])
         with r3_col1:
             st.markdown(
