@@ -63,13 +63,6 @@ st.markdown(
         padding: 8px;
         margin-top: 6px;
     }
-    .copy-box {
-        background: #f8fafc;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 10px;
-        margin-bottom: 8px;
-    }
 </style>
 
 <script>
@@ -157,11 +150,10 @@ def clean_social_url(raw_input):
 
 
 # ==========================================
-# 2. 스레드(Threads) & 샤오홍슈 전용 파서 (스레드 영상 완벽 복구)
+# 2. 스레드 & 샤오홍슈 전용 파서
 # ==========================================
 def extract_direct_meta(url):
     session = requests.Session()
-    # Meta 영상 JSON을 강제로 반환받기 위한 헤더
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -171,7 +163,6 @@ def extract_direct_meta(url):
             "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
         ),
         "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
-        "Sec-Fetch-Site": "none",
     }
     if "threads" in url:
         headers["User-Agent"] = "facebookexternalhit/1.1"
@@ -179,7 +170,6 @@ def extract_direct_meta(url):
     res = session.get(url, headers=headers, timeout=12)
     page_html = res.text
 
-    # 스레드 전용 2차 시도 (일반 모바일 UA로 영상 JSON 재탐색)
     if (
         "threads" in url
         and "video_versions" not in page_html
@@ -196,7 +186,7 @@ def extract_direct_meta(url):
     description = "추출된 본문이 없습니다."
     videos, images = [], []
 
-    # --- 샤오홍슈 JSON 파싱 ---
+    # 샤오홍슈 JSON 파싱
     if "xiaohongshu.com" in url or "rednote" in url:
         try:
             json_match = re.search(
@@ -231,7 +221,7 @@ def extract_direct_meta(url):
         except Exception:
             pass
 
-    # --- 본문 추출 ---
+    # 본문 추출
     if not description or description == "추출된 본문이 없습니다.":
         desc_match = re.search(
             r'<meta\s+(?:property|name)=["\'](?:og:description|twitter:description)["\']\s+content=["\'](.*?)["\']',
@@ -244,33 +234,28 @@ def extract_direct_meta(url):
             if sub_m:
                 description = sub_m.group(1)
 
-    # --- 스레드 & 인스타 동영상 URL 심층 추출 (핵심 해결) ---
     clean_html = (
         html.unescape(page_html).replace(r"\/", "/").replace(r"\u0026", "&")
     )
 
-    # 1) JSON 내부 video_versions 및 playback_url 정규식
     json_v1 = re.findall(
         r'"video_versions":\s*\[\s*\{[^}]*?"url":\s*"([^"]+)"', clean_html
     )
     json_v2 = re.findall(r'"playback_url":\s*"([^"]+)"', clean_html)
     videos.extend(json_v1 + json_v2)
 
-    # 2) OpenGraph 및 메타 태그
     og_v = re.findall(
         r'<meta\s+(?:property|name)=["\'](?:og:video|og:video:url|og:video:secure_url|twitter:player:stream)["\']\s+content=["\'](.*?)["\']',
         page_html,
     )
     videos.extend([html.unescape(v) for v in og_v])
 
-    # 3) Meta CDN(cdninstagram / fbcdn)의 직접 MP4 스트림 검출
     direct_mp4 = re.findall(
         r'(https?://[^\s"\'<>]*(?:cdninstagram\.com|fbcdn\.net)[^\s"\'<>]*?\.mp4[^\s"\'<>]*)',
         clean_html,
     )
     videos.extend(direct_mp4)
 
-    # --- 이미지 추출 ---
     og_i = re.findall(
         r'<meta\s+(?:property|name)=["\']og:image["\']\s+content=["\'](.*?)["\']',
         page_html,
@@ -283,11 +268,9 @@ def extract_direct_meta(url):
         ):
             images.append(clean_i)
 
-    # 중복 제거
     videos = list(dict.fromkeys(videos))
     images = list(dict.fromkeys(images))
 
-    # 실제 바이너리 파일 다운로드
     video_bytes_list, image_bytes_list = [], []
     dl_headers = {
         "User-Agent": (
@@ -501,7 +484,7 @@ def process_video_remix(video_bytes, hflip, speed, mute, blur_subtitles):
 
 
 # ==========================================
-# 5. 다운로드 즉시 실행되는 4대 플랫폼 맞춤 AI 후킹 & 대본 생성기
+# 5. AI 후킹 & 플랫폼별 대본 생성기 (문법 에러 수정 완료)
 # ==========================================
 def generate_auto_platform_copies(title, desc):
     base_keyword = title.replace("#", "").strip()
@@ -516,14 +499,12 @@ def generate_auto_platform_copies(title, desc):
         f"🚨 틱톡 알고리즘 타고 300만뷰 터진 화제의 실물",
         f"👀 자취생들 사이에서 난리 난 {base_keyword} 실사용 체감",
     ]
-    tiktok_script = f"""[0~3초 시선 강탈]
-"아직도 이거 없이 살고 계신가요? 삶의 질 3배 상승합니다."
-[3~12초 기능 시연]
-- {base_keyword} 핵심 작동 모습 컷전환
-- 비포 & 애프터 차이 극대화
-[12~15초 CTA]
-"좌표는 프로필 링크에 남겨둘게요!"
-#틱톡꿀템 #살림치트키 #자취템 #fyp"""
+    tiktok_script = (
+        '[0~3초 시선 강탈]\n"아직도 이거 없이 살고 계신가요? 삶의 질 3배'
+        f' 상승합니다."\n\n[3~12초 기능 시연]\n- {base_keyword} 핵심 작동 모습'
+        " 컷전환\n- 비포 & 애프터 차이 극대화\n\n[12~15초 CTA]\n\"좌표는 프로필"
+        ' 링크에 남겨둘게요!"\n#틱톡꿀템 #살림치트키 #자취템 #fyp'
+    )
 
     # 2) 유튜브 쇼츠
     shorts_hooks = [
@@ -531,9 +512,11 @@ def generate_auto_platform_copies(title, desc):
         f"⚠️ 절대 사지 마세요... 다른 거 다 버리게 됩니다",
         f"💡 평생 쓸 살림 치트키 발견! {base_keyword} 1분 요약",
     ]
-    shorts_script = f"""[0~3초] "이거 모르면 평생 손해입니다."
-[3~20초] 실제 사용 문제점 노출 ➔ {base_keyword}로 3초 만에 해결되는 쾌감
-[20~30초] "풀영상과 제품 정보는 고정 댓글을 확인하세요!""""
+    shorts_script = (
+        '[0~3초] "이거 모르면 평생 손해입니다."\n\n[3~20초] 실제 사용 문제점 노출 ➔'
+        f" {base_keyword}로 3초 만에 해결되는 쾌감\n\n[20~30초] 풀영상과 제품"
+        " 정보는 고정 댓글을 확인하세요!"
+    )
 
     # 3) 인스타그램 릴스
     reels_hooks = [
@@ -541,21 +524,20 @@ def generate_auto_platform_copies(title, desc):
         f"🛒 고민은 배송만 늦출 뿐... 품절대란 난 화제의 아이템",
         f"🏷️ 나만 알고 싶지만 공개하는 자취방 인테리어/살림 꿀템",
     ]
-    reels_caption = f"""친구들한테 링크 공유하기 바쁜 {base_keyword} 찐후기 🫧
-
-직접 써보고 너무 감탄해서 가져왔어요!
-복잡한 청소/정리/살림 이제 3초 만에 끝내세요 🤍
-
-📌 나중에 다시 보려면 지금 [저장] 필수!
-🔗 제품 정보는 프로필 링크에서 확인 가능합니다."""
+    reels_caption = (
+        f"친구들한테 링크 공유하기 바쁜 {base_keyword} 찐후기 🫧\n\n직접"
+        " 써보고 너무 감탄해서 가져왔어요!\n복잡한 청소/정리/살림 이제 3초"
+        " 만에 끝내세요 🤍\n\n📌 나중에 다시 보려면 지금 [저장] 필수!\n🔗 제품"
+        " 정보는 프로필 링크에서 확인 가능합니다."
+    )
 
     # 4) 스레드
-    threads_post = f"""자취 5년차인데 왜 이걸 이제야 알았을까...
-
-요즘 중국이랑 인스타에서 난리 났다는 {base_keyword} 써봤는데 진짜 신세계네요.
-원래 이런 거 잘 안 믿는 편인데 시간 90%는 아껴주는 듯 ㅋㅋㅋ
-
-궁금하신 분 계시면 링크 댓글로 남겨드릴게요!"""
+    threads_post = (
+        "자취 5년차인데 왜 이걸 이제야 알았을까...\n\n요즘 중국이랑 인스타에서"
+        f" 난리 났다는 {base_keyword} 써봤는데 진짜 신세계네요.\n원래 이런 거"
+        " 잘 안 믿는 편인데 시간 90%는 아껴주는 듯 ㅋㅋㅋ\n\n궁금하신 분 계시면"
+        " 링크 댓글로 남겨드릴게요!"
+    )
 
     return {
         "tiktok": (tiktok_hooks, tiktok_script),
@@ -566,7 +548,7 @@ def generate_auto_platform_copies(title, desc):
 
 
 # ==========================================
-# 6. 실시간 바이럴 TOP 50 & 3~4개 교차 짜깁기 클러스터 데이터베이스
+# 6. 실시간 바이럴 TOP 50 & 3~4개 교차 클러스터 DB
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_viral_top50(platform):
@@ -600,7 +582,6 @@ def get_viral_top50(platform):
 
 @st.cache_data(ttl=3600)
 def get_mashup_product_clusters():
-    # 개별 단독 영상 링크로 100% 매칭된 교차 편집 클러스터 (다운로드 즉시 지원)
     return [
         {
             "product": "전동 틈새 회전 청소솔",
@@ -650,14 +631,13 @@ def get_mashup_product_clusters():
 
 
 # ==========================================
-# UI 1. 왼쪽 사이드바: 2개 탭 (랭킹 TOP 50 + 짜깁기 클러스터)
+# UI 1. 왼쪽 사이드바: 2개 탭
 # ==========================================
 with st.sidebar:
     tab_side_rank, tab_side_mashup = st.tabs(
         ["🔥 랭킹 TOP 50", "🧩 짜깁기 클러스터"]
     )
 
-    # 1) 랭킹 TOP 50 탭
     with tab_side_rank:
         st.markdown("##### 🔥 실시간 바이럴 TOP 50")
         rank_plat = st.selectbox(
@@ -687,7 +667,6 @@ with st.sidebar:
                 st.link_button("🔗 원본", item["url"], use_container_width=True)
             st.markdown("<hr style='margin: 6px 0;'>", unsafe_allow_html=True)
 
-    # 2) 동일 제품 3~4개 교차 짜깁기 탭
     with tab_side_mashup:
         st.markdown("##### 🧩 동일 제품 3~4개 짜깁기")
         st.caption("동일 제품의 다른 앵글 영상을 받아 매시업 컷편집하세요!")
@@ -717,7 +696,7 @@ with st.sidebar:
 
 
 # ==========================================
-# UI 2. 메인 화면 상단: 3대 핵심 제어 바
+# UI 2. 메인 화면 상단
 # ==========================================
 st.markdown(
     '<div class="snap-hero-title">SnapStudio 미디어 다운로더 & 스튜디오</div>',
@@ -777,7 +756,7 @@ st.write("")
 
 
 # ==========================================
-# UI 3. 주소창 (✖ 삭제 & 📋 붙여넣기)
+# UI 3. 주소창
 # ==========================================
 def clear_url_callback():
     st.session_state["main_text_field"] = ""
@@ -839,7 +818,6 @@ st.markdown(
 )
 
 
-# 다운로드 트리거 및 진행률 바 실행
 is_triggered = analyze_btn or st.session_state["auto_run"]
 st.session_state["auto_run"] = False
 
@@ -853,7 +831,6 @@ if is_triggered:
             final_url = clean_social_url(current_target)
             progress_bar.progress(40, text="⚡ 미디어 스트림 및 본문 데이터 추출 중... 40%")
 
-            # 스레드 및 샤오홍슈는 전용 메타 파서 우선 적용
             if any(
                 k in final_url for k in ["rednote", "xiaohongshu", "threads"]
             ):
@@ -868,7 +845,6 @@ if is_triggered:
             else:
                 res_data = download_media_package(final_url, progress_bar)
 
-            # 세탁 옵션 즉시 가공
             if res_data.get("videos"):
                 progress_bar.progress(
                     75, text="✂️ FFmpeg 자동 세탁 렌더링 중 (반전/배속/자막블러)... 75%"
@@ -895,7 +871,7 @@ if is_triggered:
 
 
 # ==========================================
-# UI 4. 파일 미리보기 & 다운로드 즉시 연동 AI 대본 (요청 3, 5 완벽 구현)
+# UI 4. 파일 미리보기 & 다운로드 연동 AI 대본
 # ==========================================
 if st.session_state.get("data"):
     data = st.session_state["data"]
@@ -907,8 +883,6 @@ if st.session_state.get("data"):
     remix_v = st.session_state.get("remix_video")
 
     st.markdown("---")
-
-    # 1. 파일 미리보기 전용 카드
     st.markdown(f"#### 🎬 파일 미리보기: `{title[:45]}...`")
 
     with st.container():
@@ -949,7 +923,6 @@ if st.session_state.get("data"):
                         use_container_width=True,
                     )
 
-    # 2. 영상 맞춤 4대 플랫폼 AI 바이럴 후킹 & 대본 (다운로드 즉시 자동 생성)
     st.markdown("---")
     st.markdown("#### 🎯 영상 맞춤 AI 바이럴 후킹 & 플랫폼별 대본")
     st.caption(
@@ -997,7 +970,6 @@ if st.session_state.get("data"):
             "스레드 본문", ai_copies["threads"], height=160, key="copy_th"
         )
 
-    # 3. 규격별 미디어 다운로드 리스트 (2열 분리)
     st.markdown("---")
     st.markdown("#### 📥 규격별 미디어 다운로드")
 
@@ -1064,13 +1036,12 @@ if st.session_state.get("data"):
                 st.download_button(
                     f"⬇️ 사진 #{idx + 1} 받기",
                     img_b,
-                    f"image_{idx + 1}.jpg",
+                    f"img_{idx + 1}.jpg",
                     "image/jpeg",
                     key=f"img_dl_{idx}",
                     use_container_width=True,
                 )
 
-    # 전체 일괄 ZIP
     st.markdown("---")
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
