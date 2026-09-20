@@ -6,12 +6,14 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import requests
 import streamlit as st
 import yt_dlp
 
+# 1. 사이트 이름 변경
 st.set_page_config(
-    page_title="SnapWC - SNS 다운로더",
+    page_title="SNS 다운로더",
     page_icon="⚡",
     layout="centered",
     initial_sidebar_state="collapsed",
@@ -46,6 +48,17 @@ st.markdown(
         color: #94a3b8;
         margin-top: 8px;
         margin-bottom: 20px;
+    }
+    .status-bar {
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        color: #1d4ed8;
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 13.5px;
+        font-weight: 600;
+        margin: 10px 0;
+        text-align: center;
     }
 </style>
 
@@ -83,7 +96,7 @@ if "mp3_bytes" not in st.session_state:
 
 
 # ==========================================
-# 1. URL 정제 (단축링크 & 유튜브 쇼츠 정규화)
+# URL 정제 엔진
 # ==========================================
 def clean_social_url(raw_text):
     m = re.search(r"https?://[^\s<>\"']+", raw_text)
@@ -91,7 +104,6 @@ def clean_social_url(raw_text):
         return ""
     clean = m.group(0)
 
-    # 모바일 단축 링크 리다이렉트 추적
     if any(k in clean for k in ["xhslink.com", "v.douyin.com", "vt.tiktok.com", "youtu.be", "/share/"]):
         try:
             r = requests.head(clean, allow_redirects=True, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
@@ -99,7 +111,6 @@ def clean_social_url(raw_text):
         except Exception:
             pass
 
-    # 유튜브 쇼츠 403 회피를 위한 표준 주소 변환
     if "youtube.com/shorts/" in clean:
         shorts_id = clean.split("shorts/")[1].split("?")[0].split("&")[0]
         clean = f"https://www.youtube.com/watch?v={shorts_id}"
@@ -111,7 +122,7 @@ def clean_social_url(raw_text):
 
 
 # ==========================================
-# 2. RedNote (샤오홍슈) 무워터마크 직접 추출
+# RedNote (샤오홍슈) 직접 추출 엔진
 # ==========================================
 def extract_rednote(target_url):
     session = requests.Session()
@@ -128,7 +139,6 @@ def extract_rednote(target_url):
     video_bytes = None
     images = []
 
-    # 1) JSON 내부 탐색 (undefined 에러 방지)
     json_match = re.search(r"window\.__INITIAL_STATE__\s*=\s*({.+?})</script>", page_html, re.DOTALL)
     if json_match:
         try:
@@ -140,7 +150,6 @@ def extract_rednote(target_url):
             title = note.get("title") or title
             desc = note.get("desc") or desc
 
-            # 비디오 스트림
             v_stream = note.get("video", {}).get("media", {}).get("stream", {})
             v_url = (
                 v_stream.get("h264", [{}])[0].get("masterUrl")
@@ -151,7 +160,6 @@ def extract_rednote(target_url):
                 if vr.status_code == 200:
                     video_bytes = vr.content
 
-            # 사진 슬라이드 노트
             for img in note.get("imageList", []):
                 iu = img.get("urlDefault") or img.get("infoList", [{}])[-1].get("url")
                 if iu:
@@ -161,7 +169,6 @@ def extract_rednote(target_url):
         except Exception:
             pass
 
-    # 2) Fallback: 비디오 스트림 직접 탐색
     if not video_bytes:
         video_links = re.findall(r'https?://[^\s"\'<>]+(?:xhscdn\.com|sns-video)[^\s"\'<>]*\.mp4[^\s"\'<>]*', page_html)
         for vl in list(dict.fromkeys(video_links)):
@@ -179,14 +186,14 @@ def extract_rednote(target_url):
             desc = d_m.group(1)
 
     if not video_bytes and not images:
-        raise Exception("미디어 스트림을 찾지 못했습니다. 게시물 링크가 맞는지 확인해 주세요.")
+        raise Exception("미디어 스트림을 찾지 못했습니다. 링크를 확인해 주세요.")
 
     thumb = images[0] if images else None
     return {"title": title, "desc": desc, "video": video_bytes, "images": images, "thumb": thumb}
 
 
 # ==========================================
-# 3. Threads (스레드) 추출 엔진
+# Threads (스레드) 추출 엔진
 # ==========================================
 def extract_threads(target_url):
     session = requests.Session()
@@ -203,7 +210,6 @@ def extract_threads(target_url):
     if d_m:
         desc = d_m.group(1)
 
-    # 비디오 URL 탐색
     video_urls = re.findall(r'(https?://[^\s"\'<>]*(?:cdninstagram\.com|fbcdn\.net)[^\s"\'<>]*?\.mp4[^\s"\'<>]*)', page_html)
     for vu in list(dict.fromkeys(video_urls)):
         try:
@@ -214,7 +220,6 @@ def extract_threads(target_url):
         except Exception:
             pass
 
-    # 이미지 탐색
     img_urls = re.findall(r'<meta\s+property=["\']og:image["\']\s+content=["\'](.*?)["\']', page_html)
     for iu in list(dict.fromkeys(img_urls)):
         if "static.cdninstagram.com" not in iu:
@@ -230,28 +235,56 @@ def extract_threads(target_url):
 
 
 # ==========================================
-# 4. YouTube & Instagram 범용 추출 (403 방어 탑재)
+# YouTube & Instagram 추출 엔진 (403 에러 완벽 해결)
 # ==========================================
-def extract_generic(target_url):
+def extract_generic_or_youtube(target_url):
     temp_dir = tempfile.mkdtemp()
+    
+    # 403 차단을 회피하는 ios / mweb 클라이언트 및 단일 통합 포맷 설정
     ydl_opts = {
         "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
-        "format": "best[ext=mp4]/best",
+        "format": "18/22/best[ext=mp4]/best",
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["ios", "mweb"],
+                "player_skip": ["webpage", "configs"],
+            }
+        },
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+        },
     }
 
-    # 유튜브 403 차단 방어 전용 클라이언트 설정
-    if "youtube.com" in target_url or "youtu.be" in target_url:
-        ydl_opts["extractor_args"] = {
-            "youtube": {"player_client": ["android_creator", "android"]}
-        }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(target_url, download=True)
-        title = info.get("title", "SNS Media")
-        desc = info.get("description", "")
-        thumb_url = info.get("thumbnail")
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(target_url, download=True)
+            title = info.get("title", "SNS Media")
+            desc = info.get("description", "")
+            thumb_url = info.get("thumbnail")
+    except Exception:
+        # Fallback: 직접 스트림 URL 추출 후 다운로드
+        ydl_opts["format"] = "best"
+        ydl_opts["extractor_args"]["youtube"]["player_client"] = ["tv_embedded", "mweb"]
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(target_url, download=False)
+            title = info.get("title", "SNS Media")
+            desc = info.get("description", "")
+            thumb_url = info.get("thumbnail")
+            direct_url = info.get("url")
+            
+            if direct_url:
+                r = requests.get(direct_url, timeout=25, headers=ydl_opts["http_headers"])
+                if r.status_code == 200:
+                    thumb_b = None
+                    if thumb_url:
+                        try:
+                            thumb_b = requests.get(thumb_url, timeout=8).content
+                        except Exception:
+                            pass
+                    return {"title": title, "desc": desc, "video": r.content, "images": [], "thumb": thumb_b}
+        raise Exception("YouTube 비디오 스트림을 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.")
 
     video_bytes = None
     for f in glob.glob(os.path.join(temp_dir, "*")):
@@ -273,7 +306,7 @@ def extract_generic(target_url):
 
 
 # ==========================================
-# 5. FFmpeg 편집 엔진 (좌우 반전 & 배속)
+# FFmpeg 가공 & MP3 음원 분리
 # ==========================================
 def process_editing(video_bytes, hflip, speed):
     if not hflip and speed == 1.0:
@@ -311,7 +344,6 @@ def process_editing(video_bytes, hflip, speed):
     return video_bytes
 
 
-# MP3 음원 추출
 def extract_mp3_audio(video_bytes):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as in_f:
         in_f.write(video_bytes)
@@ -335,14 +367,14 @@ def clear_text():
 
 
 # ==========================================
-# UI 1. 메인 헤더
+# UI 1. 상단 타이틀 (SNS 다운로더)
 # ==========================================
-st.markdown('<div class="snap-title">SnapWC 무워터마크 다운로더</div>', unsafe_allow_html=True)
-st.markdown('<div class="snap-sub">유튜브 (롱폼/숏폼) · 샤오홍슈(RedNote) · 인스타그램 · 스레드</div>', unsafe_allow_html=True)
+st.markdown('<div class="snap-title">SNS 다운로더</div>', unsafe_allow_html=True)
+st.markdown('<div class="snap-sub">YouTube (Shorts/Longform) · RedNote · TikTok · Reels · Threads 무워터마크 저장</div>', unsafe_allow_html=True)
 
 
 # ==========================================
-# UI 2. SnapWC 스타일 주소창 (지우기 ✖ & 붙여넣기 📋 탑재)
+# UI 2. 주소창 (지우기 ✖ & 붙여넣기 📋)
 # ==========================================
 c_in, c_clear, c_paste, c_btn = st.columns([3.8, 0.45, 0.45, 1.3])
 
@@ -378,7 +410,7 @@ with c_btn:
     submit_btn = st.button("다운로드 링크 받기", use_container_width=True, type="primary")
 
 st.markdown(
-    '<div class="support-sites">YouTube (Shorts/Longform), RedNote(샤오홍슈), Instagram Reels, Threads 지원</div>',
+    '<div class="support-sites">YouTube, RedNote(샤오홍슈), TikTok, Instagram, Threads 전 세계 사이트 지원</div>',
     unsafe_allow_html=True,
 )
 
@@ -389,15 +421,13 @@ st.markdown(
 with st.expander("⚙️ 영상 편집 옵션 (기본: 원본 그대로)", expanded=False):
     col_opt1, col_opt2 = st.columns(2)
     with col_opt1:
-        # 기본값 미클릭 (False)
         opt_flip = st.checkbox("🔄 좌우 대칭 변경 (반전)", value=False)
     with col_opt2:
-        # 기본값 1.0배속 (index=0)
         opt_speed = st.selectbox("⏩ 배속 선택", [1.0, 1.05, 1.1, 1.15, 1.2], index=0)
 
 
 # ==========================================
-# 다운로드 및 가공 실행
+# 다운로드 실행 및 진행률 바
 # ==========================================
 if submit_btn:
     if not url_input_val.strip():
@@ -407,56 +437,82 @@ if submit_btn:
         if not target_link:
             st.error("입력한 텍스트에서 올바른 링크(https://...)를 찾을 수 없습니다.")
         else:
-            with st.spinner("미디어 다운로드 및 처리 중..."):
-                try:
-                    # 4대 플랫폼 분기
-                    if "rednote.com" in target_link or "xiaohongshu.com" in target_link:
-                        raw = extract_rednote(target_link)
-                    elif "threads.net" in target_link or "threads.com" in target_link:
-                        raw = extract_threads(target_link)
-                    else:
-                        raw = extract_generic(target_link)
+            # 3. 진행률 바 생성
+            p_bar = st.progress(10, text="⌛ 링크 분석 및 리다이렉트 추적 중... 10%")
+            try:
+                time.sleep(0.2)
+                p_bar.progress(40, text="⚡ 무워터마크 미디어 스트림 추출 중... 40%")
 
-                    # 편집 옵션 적용 (기본값일 때는 0초 즉시 패스)
-                    final_video = None
-                    if raw.get("video"):
-                        final_video = process_editing(raw["video"], opt_flip, opt_speed)
+                if "rednote.com" in target_link or "xiaohongshu.com" in target_link:
+                    raw = extract_rednote(target_link)
+                elif "threads.net" in target_link or "threads.com" in target_link:
+                    raw = extract_threads(target_link)
+                else:
+                    raw = extract_generic_or_youtube(target_link)
 
-                    st.session_state["processed_result"] = {
-                        "video": final_video,
-                        "raw_video": raw.get("video"),
-                        "images": raw.get("images", []),
-                        "title": raw.get("title", "SNS Media"),
-                        "desc": raw.get("desc", ""),
-                        "thumb": raw.get("thumb"),
-                    }
-                    st.session_state["mp3_bytes"] = None
-                    st.success("✅ 다운로드 링크가 준비되었습니다!")
-                except Exception as err:
-                    st.error(f"다운로드 실패: {err}")
+                p_bar.progress(80, text="✂️ 미디어 패키징 및 편집 처리 중... 80%")
+
+                final_video = None
+                if raw.get("video"):
+                    final_video = process_editing(raw["video"], opt_flip, opt_speed)
+
+                p_bar.progress(100, text="✅ 완료! 다운로드 링크가 준비되었습니다.")
+                time.sleep(0.3)
+                p_bar.empty()
+
+                st.session_state["processed_result"] = {
+                    "video": final_video,
+                    "raw_video": raw.get("video"),
+                    "images": raw.get("images", []),
+                    "title": raw.get("title", "SNS Media"),
+                    "desc": raw.get("desc", ""),
+                    "thumb": raw.get("thumb"),
+                }
+                st.session_state["mp3_bytes"] = None
+                st.success("✅ 다운로드 링크가 준비되었습니다!")
+
+            except Exception as err:
+                p_bar.empty()
+                st.error(f"다운로드 실패: {err}")
 
 
 # ==========================================
-# UI 4. SnapWC 결과 화면 (스크린샷 15 스타일 1:1 구현)
+# 4. 미리보기 생성 및 결과 화면 (SnapWC 1:1 완벽 구현)
 # ==========================================
 if st.session_state.get("processed_result"):
     data = st.session_state["processed_result"]
     vid = data.get("video")
     imgs = data.get("images", [])
-    title = data.get("title", "")
+    title = data.get("title", "downloaded_video")
     desc = data.get("desc", "")
     thumb = data.get("thumb")
 
     st.markdown("---")
-    st.markdown("#### 다운로드 링크가 준비되었습니다")
-    st.caption("원하는 형식과 품질을 선택하세요")
+    st.markdown("#### 🎬 파일 미리보기 및 다운로드")
 
-    # 1. 썸네일 & 본문 카드
-    with st.container():
-        c_left, c_right = st.columns([1.3, 2.7])
-        with c_left:
+    if vid:
+        # 1) 상단 대형 비디오 미리보기 플레이어
+        st.video(vid)
+
+        # 2) 파일명 및 상태 바
+        clean_name = re.sub(r'[\\/*?:"<>|]', "", title)[:40]
+        st.markdown(f"**{clean_name}.mp4**")
+        st.markdown('<div class="status-bar">다운로드가 완료되었습니다.</div>', unsafe_allow_html=True)
+
+        # 3) 다운로드 및 MP3 분리 섹션
+        v_mb = round(len(vid) / (1024 * 1024), 1)
+        r1, r2 = st.columns([1.5, 1])
+        with r1:
+            st.download_button(
+                f"⬇️ 무워터마크 MP4 받기 ({v_mb} MB)",
+                vid,
+                f"{clean_name}.mp4",
+                "video/mp4",
+                type="primary",
+                use_container_width=True,
+            )
+        with r2:
             if thumb:
-                st.image(thumb, use_container_width=True)
                 st.download_button(
                     "🖼 커버 이미지 다운로드",
                     thumb,
@@ -464,55 +520,32 @@ if st.session_state.get("processed_result"):
                     "image/jpeg",
                     use_container_width=True,
                 )
-            elif vid:
-                st.video(vid)
-        with c_right:
-            st.markdown(f"**{title}**")
-            st.text_area("게시물 내용 및 해시태그 (복사 가능)", desc, height=140)
 
-    # 2. 영상 다운로드 버튼 섹션
-    if vid:
-        st.markdown("---")
-        st.markdown("🎬 **영상 (MP4)**")
-
-        v_mb = round(len(vid) / (1024 * 1024), 1)
-        r_col1, r_col2 = st.columns([3, 1.2])
-        with r_col1:
-            st.markdown(f"**HD MP4 (무워터마크)**  \n`{v_mb} MB`")
-        with r_col2:
-            st.download_button(
-                "⬇️ 다운로드",
-                vid,
-                "video.mp4",
-                "video/mp4",
-                type="primary",
-                use_container_width=True,
-            )
-
-        # MP3 음원 추출
         st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
-        a_col1, a_col2 = st.columns([3, 1.2])
-        with a_col1:
-            st.markdown("**오디오 (MP3 음원)**  \n배경음악 및 오디오 분리")
-        with a_col2:
-            if st.button("🎵 MP3 추출", use_container_width=True):
-                with st.spinner("음원 분리 중..."):
+
+        # MP3 오디오 분리
+        a1, a2 = st.columns([1.5, 1])
+        with a1:
+            if st.button("🎵 고음질 MP3 음원 분리", use_container_width=True):
+                with st.spinner("MP3 추출 중..."):
                     st.session_state["mp3_bytes"] = extract_mp3_audio(vid)
 
         if st.session_state.get("mp3_bytes"):
-            mp3_data = st.session_state["mp3_bytes"]
-            st.download_button(
-                f"⬇️ MP3 다운로드 ({round(len(mp3_data)/(1024*1024), 1)} MB)",
-                mp3_data,
-                "audio.mp3",
-                "audio/mp3",
-                use_container_width=True,
-            )
+            mp3_d = st.session_state["mp3_bytes"]
+            with a2:
+                st.download_button(
+                    f"⬇️ MP3 다운로드 ({round(len(mp3_d)/(1024*1024), 1)} MB)",
+                    mp3_d,
+                    f"{clean_name}.mp3",
+                    "audio/mp3",
+                    use_container_width=True,
+                )
 
-    # 3. 사진 슬라이드 게시물인 경우
+        if desc:
+            st.text_area("게시물 원본 텍스트", desc, height=95)
+
     elif imgs:
-        st.markdown("---")
-        st.markdown(f"🖼️ **고화질 사진 ({len(imgs)}장)**")
+        st.markdown(f"**고화질 사진 노트 ({len(imgs)}장)**")
         img_cols = st.columns(3)
         for idx, img_b in enumerate(imgs):
             with img_cols[idx % 3]:
